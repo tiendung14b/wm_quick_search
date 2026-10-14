@@ -5,9 +5,7 @@ import {
   Search,
   Copy,
   Check,
-  Upload,
   Plus,
-  Image as ImageIcon,
   LogIn,
   LogOut,
   Settings,
@@ -25,8 +23,6 @@ import {
   Camera,
   ExternalLink,
   ArrowUp,
-  CloudCheck,
-  ShieldAlert,
 } from 'lucide-react';
 
 interface Product {
@@ -54,6 +50,28 @@ interface AuthState {
   remainingSeconds: number;
 }
 
+type ViewMode = 'list' | 'grid' | 'table';
+
+const CATEGORIES = [
+  'Trái Cây Nội',
+  'Trái Cây Nhập Khẩu',
+  'Rau Củ',
+  'Thuỷ Hải Sản',
+  'Thịt & Món Chế Biến',
+  'Bánh Kẹo & Thạch',
+];
+
+const UNITS = ['kg', 'quả', 'khay', 'gói', 'hộp', 'túi', 'con', 'cốc', 'phần'];
+
+const EMPTY_FORM = {
+  plu: '',
+  name: '',
+  category: 'Trái Cây Nội',
+  unit: 'kg',
+  note: '',
+  image_url: '',
+};
+
 // Accent remover for smooth Vietnamese searching
 function normalizeVN(str: string): string {
   if (!str) return '';
@@ -65,14 +83,46 @@ function normalizeVN(str: string): string {
     .replace(/Đ/g, 'd');
 }
 
+// Category colors
+function getCategoryTheme(category: string) {
+  switch (category) {
+    case 'Trái Cây Nội':
+      return { bg: '#ecfdf5', color: '#047857' };
+    case 'Trái Cây Nhập Khẩu':
+      return { bg: '#f5f3ff', color: '#6d28d9' };
+    case 'Rau Củ':
+      return { bg: '#f0fdf4', color: '#15803d' };
+    case 'Thuỷ Hải Sản':
+      return { bg: '#eff6ff', color: '#1d4ed8' };
+    case 'Thịt & Món Chế Biến':
+      return { bg: '#fffbeb', color: '#b45309' };
+    case 'Bánh Kẹo & Thạch':
+      return { bg: '#fdf2f8', color: '#be185d' };
+    default:
+      return { bg: '#f1f5f9', color: '#475569' };
+  }
+}
+
+// Placeholder when product has no image: first letter on category color
+function Avatar({ name, category }: { name: string; category: string }) {
+  const theme = getCategoryTheme(category);
+  const letter = (name || '?').trim().charAt(0);
+  return (
+    <div className="avatar" style={{ background: theme.bg, color: theme.color }}>
+      {letter}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'table'>('grid');
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [sortBy, setSortBy] = useState<'plu_asc' | 'name_asc'>('plu_asc');
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
 
   // Auth State
   const [auth, setAuth] = useState<AuthState>({
@@ -98,14 +148,7 @@ export default function HomePage() {
 
   const [editProduct, setEditProduct] = useState<Product | null>(null);
   const [isAddOpen, setIsAddOpen] = useState(false);
-  const [productForm, setProductForm] = useState({
-    plu: '',
-    name: '',
-    category: 'Trái Cây Nội',
-    unit: 'kg',
-    note: '',
-    image_url: '',
-  });
+  const [productForm, setProductForm] = useState(EMPTY_FORM);
 
   const [productImageMode, setProductImageMode] = useState<'upload' | 'url'>('upload');
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
@@ -127,32 +170,56 @@ export default function HomePage() {
   const [testingConnection, setTestingConnection] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
-  const [lightboxImage, setLightboxImage] = useState<{ url: string; title: string; plu: string } | null>(null);
+  const [lightboxImage, setLightboxImage] = useState<Product | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Toast Helper
   const addToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
     const id = Math.random().toString(36).substring(2, 9);
-    setToasts((prev) => [...prev, { id, message, type }]);
+    setToasts((prev) => [...prev.slice(-2), { id, message, type }]);
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3500);
+    }, 2800);
   };
+
+  // Detect mobile: default to list view on phones, grid on desktop.
+  // Only autofocus search on desktop (on phones it would pop up the keyboard immediately).
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 640px)');
+    const apply = () => setIsMobile(mq.matches);
+    apply();
+    setViewMode(mq.matches ? 'list' : 'grid');
+    if (!mq.matches) searchInputRef.current?.focus();
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
+
+  // Table view is desktop-only
+  useEffect(() => {
+    if (isMobile && viewMode === 'table') setViewMode('list');
+  }, [isMobile, viewMode]);
 
   // Scroll listener for Floating Scroll to Top button
   useEffect(() => {
-    const handleScroll = () => {
-      setShowScrollTop(window.scrollY > 250);
-    };
+    const handleScroll = () => setShowScrollTop(window.scrollY > 400);
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  // Lock body scroll when a modal is open
+  const anyModalOpen = !!(isLoginOpen || uploadProduct || isAddOpen || editProduct || isSettingsOpen || lightboxImage);
+  useEffect(() => {
+    document.body.style.overflow = anyModalOpen ? 'hidden' : '';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [anyModalOpen]);
+
   // Keyboard shortcut for search
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === '/' && document.activeElement !== searchInputRef.current) {
+      if (e.key === '/' && document.activeElement?.tagName !== 'INPUT') {
         e.preventDefault();
         searchInputRef.current?.focus();
       }
@@ -160,14 +227,14 @@ export default function HomePage() {
         if (lightboxImage) setLightboxImage(null);
         else if (uploadProduct) setUploadProduct(null);
         else if (isLoginOpen) setIsLoginOpen(false);
-        else if (isAddOpen) setIsAddOpen(false);
-        else if (editProduct) setEditProduct(null);
+        else if (isAddOpen || editProduct) closeProductModal();
         else if (isSettingsOpen) setIsSettingsOpen(false);
         else if (searchQuery) setSearchQuery('');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lightboxImage, uploadProduct, isLoginOpen, isAddOpen, editProduct, isSettingsOpen, searchQuery]);
 
   // Fetch initial data & auth check
@@ -267,20 +334,35 @@ export default function HomePage() {
     try {
       await fetch('/api/auth/logout', { method: 'POST' });
       setAuth({ authenticated: false, user: null, expiresAt: null, remainingSeconds: 0 });
-      addToast('Đã đăng xuất khỏi tài khoản quản trị', 'info');
+      addToast('Đã đăng xuất', 'info');
     } catch {
       addToast('Lỗi khi đăng xuất', 'error');
     }
   };
 
   // Copy PLU with visual and toast feedback
-  const handleCopyPlu = (plu: string, name?: string) => {
-    navigator.clipboard.writeText(plu);
+  const handleCopyPlu = async (plu: string, name?: string) => {
+    try {
+      await navigator.clipboard.writeText(plu);
+    } catch {
+      // Fallback for non-secure contexts (e.g. http on LAN)
+      const ta = document.createElement('textarea');
+      ta.value = plu;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand('copy');
+      } catch {
+        // ignore
+      }
+      document.body.removeChild(ta);
+    }
+    if (navigator.vibrate) navigator.vibrate(15);
     setCopiedPlu(plu);
-    addToast(`Đã sao chép PLU: ${plu}${name ? ` (${name})` : ''}`, 'success');
-    setTimeout(() => {
-      setCopiedPlu(null);
-    }, 1800);
+    addToast(`Đã chép mã ${plu}${name ? ` · ${name}` : ''}`, 'success');
+    setTimeout(() => setCopiedPlu((cur) => (cur === plu ? null : cur)), 1600);
   };
 
   // Test Cloudinary connection
@@ -291,26 +373,12 @@ export default function HomePage() {
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'test',
-          ...settingsForm,
-        }),
+        body: JSON.stringify({ action: 'test', ...settingsForm }),
       });
       const data = await res.json();
-      setTestResult({
-        success: data.success,
-        message: data.message,
-      });
-      if (data.success) {
-        addToast(data.message, 'success');
-      } else {
-        addToast(data.message, 'error');
-      }
+      setTestResult({ success: data.success, message: data.message });
     } catch {
-      setTestResult({
-        success: false,
-        message: 'Lỗi kết nối kiểm tra Cloudinary',
-      });
+      setTestResult({ success: false, message: 'Lỗi kết nối kiểm tra Cloudinary' });
     } finally {
       setTestingConnection(false);
     }
@@ -328,7 +396,7 @@ export default function HomePage() {
       });
       const data = await res.json();
       if (data.success) {
-        addToast(data.message || 'Đã lưu cấu hình Cloudinary thành công!', 'success');
+        addToast(data.message || 'Đã lưu cấu hình Cloudinary', 'success');
         setCloudinaryConfigured(data.isVerified);
         setConfiguredCloudName(data.cloudName);
         setIsSettingsOpen(false);
@@ -346,23 +414,19 @@ export default function HomePage() {
   const handlePasteCloudinaryUrl = (url: string) => {
     const trimmed = url.trim();
     if (trimmed.startsWith('cloudinary://')) {
-      try {
-        const clean = trimmed.replace('cloudinary://', '');
-        const [authPart, cloudName] = clean.split('@');
-        if (authPart && cloudName) {
-          const [apiKey, apiSecret] = authPart.split(':');
-          setSettingsForm({
-            ...settingsForm,
-            cloudinary_cloud_name: cloudName.trim(),
-            cloudinary_api_key: apiKey?.trim() || '',
-            cloudinary_token: apiSecret?.trim() || '',
-            cloudinary_url: trimmed,
-          });
-          addToast('Đã tự động trích xuất thông tin từ URL Cloudinary!', 'info');
-          return;
-        }
-      } catch {
-        // Ignore parse error
+      const clean = trimmed.replace('cloudinary://', '');
+      const [authPart, cloudName] = clean.split('@');
+      if (authPart && cloudName) {
+        const [apiKey, apiSecret] = authPart.split(':');
+        setSettingsForm({
+          ...settingsForm,
+          cloudinary_cloud_name: cloudName.trim(),
+          cloudinary_api_key: apiKey?.trim() || '',
+          cloudinary_token: apiSecret?.trim() || '',
+          cloudinary_url: trimmed,
+        });
+        addToast('Đã tự điền thông tin từ CLOUDINARY_URL', 'info');
+        return;
       }
     }
     setSettingsForm({ ...settingsForm, cloudinary_url: url });
@@ -372,12 +436,18 @@ export default function HomePage() {
   const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (uploadPreview && uploadPreview.startsWith('blob:')) {
-        URL.revokeObjectURL(uploadPreview);
-      }
+      if (uploadPreview?.startsWith('blob:')) URL.revokeObjectURL(uploadPreview);
       setUploadFile(file);
       setUploadPreview(URL.createObjectURL(file));
     }
+  };
+
+  const closeUploadModal = () => {
+    if (uploading) return;
+    if (uploadPreview?.startsWith('blob:')) URL.revokeObjectURL(uploadPreview);
+    setUploadProduct(null);
+    setUploadFile(null);
+    setUploadPreview(null);
   };
 
   // Upload image for a product
@@ -394,21 +464,16 @@ export default function HomePage() {
       formData.append('file', uploadFile);
       formData.append('productId', String(uploadProduct.id));
 
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
       const data = await res.json();
       if (data.success) {
-        addToast(data.message || 'Tải ảnh lên Cloudinary thành công!', 'success');
-        // Update product in local state
+        addToast(data.message || 'Tải ảnh lên thành công!', 'success');
         setProducts((prev) =>
-          prev.map((p) => (p.id === uploadProduct.id ? { ...p, image_url: data.url, image_public_id: data.publicId } : p))
+          prev.map((p) =>
+            p.id === uploadProduct.id ? { ...p, image_url: data.url, image_public_id: data.publicId } : p
+          )
         );
-        if (uploadPreview && uploadPreview.startsWith('blob:')) {
-          URL.revokeObjectURL(uploadPreview);
-        }
+        if (uploadPreview?.startsWith('blob:')) URL.revokeObjectURL(uploadPreview);
         setUploadProduct(null);
         setUploadFile(null);
         setUploadPreview(null);
@@ -422,53 +487,75 @@ export default function HomePage() {
     }
   };
 
+  // Open add / edit modal
+  const openAddModal = () => {
+    setEditProduct(null);
+    setProductForm(EMPTY_FORM);
+    setProductImageFile(null);
+    setProductImagePreview(null);
+    setProductImageMode('upload');
+    setIsAddOpen(true);
+  };
+
+  const openEditModal = (p: Product) => {
+    setIsAddOpen(false);
+    setEditProduct(p);
+    setProductForm({
+      plu: p.plu,
+      name: p.name,
+      category: p.category,
+      unit: p.unit,
+      note: p.note || '',
+      image_url: p.image_url || '',
+    });
+    setProductImageFile(null);
+    setProductImagePreview(p.image_url || null);
+    setProductImageMode(p.image_url ? 'url' : 'upload');
+  };
+
+  const closeProductModal = () => {
+    if (savingProduct) return;
+    if (productImagePreview?.startsWith('blob:')) URL.revokeObjectURL(productImagePreview);
+    setIsAddOpen(false);
+    setEditProduct(null);
+    setProductImageFile(null);
+    setProductImagePreview(null);
+  };
+
   // Save new or edited product
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
 
     let finalImageUrl = productForm.image_url.trim();
 
-    // Check: STRICTLY DISALLOW Base64 in image_url
+    // STRICTLY DISALLOW Base64 in image_url
     if (finalImageUrl.startsWith('data:')) {
-      addToast('Không được phép lưu ảnh Base64. Vui lòng tải file ảnh lên Cloudinary hoặc dùng link ảnh ngoài.', 'error');
+      addToast('Không được lưu ảnh Base64. Hãy tải file ảnh lên Cloudinary.', 'error');
       return;
     }
 
     setSavingProduct(true);
     try {
-      // If user uploaded a new image file, upload to Cloudinary first
+      // If user picked a new image file, upload to Cloudinary first
       if (productImageFile) {
-        setSaveStep('Đang tải ảnh lên Cloudinary...');
+        setSaveStep('Đang tải ảnh...');
         const formData = new FormData();
         formData.append('file', productImageFile);
-        if (editProduct) {
-          formData.append('productId', String(editProduct.id));
-        }
+        if (editProduct) formData.append('productId', String(editProduct.id));
 
-        const uploadRes = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData,
-        });
-
+        const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
         const uploadData = await uploadRes.json();
         if (!uploadData.success) {
           addToast(uploadData.message || 'Lỗi khi tải ảnh lên Cloudinary', 'error');
-          setSavingProduct(false);
-          setSaveStep('');
           return;
         }
-
         finalImageUrl = uploadData.url;
       }
 
-      setSaveStep('Đang lưu thông tin sản phẩm...');
-      const payload = {
-        ...productForm,
-        image_url: finalImageUrl,
-      };
+      setSaveStep('Đang lưu...');
+      const payload = { ...productForm, image_url: finalImageUrl };
 
       if (editProduct) {
-        // Update
         const res = await fetch(`/api/products/${editProduct.id}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -476,13 +563,9 @@ export default function HomePage() {
         });
         const data = await res.json();
         if (data.success) {
-          addToast('Cập nhật sản phẩm thành công', 'success');
-          setProducts((prev) =>
-            prev.map((p) => (p.id === editProduct.id ? { ...p, ...payload } : p))
-          );
-          if (productImagePreview && productImagePreview.startsWith('blob:')) {
-            URL.revokeObjectURL(productImagePreview);
-          }
+          addToast('Đã cập nhật sản phẩm', 'success');
+          setProducts((prev) => prev.map((p) => (p.id === editProduct.id ? { ...p, ...payload } : p)));
+          if (productImagePreview?.startsWith('blob:')) URL.revokeObjectURL(productImagePreview);
           setEditProduct(null);
           setProductImageFile(null);
           setProductImagePreview(null);
@@ -490,7 +573,6 @@ export default function HomePage() {
           addToast(data.message || 'Lỗi cập nhật', 'error');
         }
       } else {
-        // Create
         const res = await fetch('/api/products', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -498,10 +580,8 @@ export default function HomePage() {
         });
         const data = await res.json();
         if (data.success) {
-          addToast('Thêm sản phẩm thành công', 'success');
-          if (productImagePreview && productImagePreview.startsWith('blob:')) {
-            URL.revokeObjectURL(productImagePreview);
-          }
+          addToast('Đã thêm sản phẩm', 'success');
+          if (productImagePreview?.startsWith('blob:')) URL.revokeObjectURL(productImagePreview);
           setIsAddOpen(false);
           setProductImageFile(null);
           setProductImagePreview(null);
@@ -520,13 +600,14 @@ export default function HomePage() {
 
   // Delete product
   const handleDeleteProduct = async (id: number, name: string) => {
-    if (!confirm(`Bạn có chắc chắn muốn xóa sản phẩm "${name}"?`)) return;
+    if (!confirm(`Xóa sản phẩm "${name}"?`)) return;
     try {
       const res = await fetch(`/api/products/${id}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
         addToast('Đã xóa sản phẩm', 'success');
         setProducts((prev) => prev.filter((p) => p.id !== id));
+        if (editProduct?.id === id) setEditProduct(null);
       } else {
         addToast(data.message || 'Lỗi khi xóa', 'error');
       }
@@ -535,34 +616,36 @@ export default function HomePage() {
     }
   };
 
+  // Tap on product image / thumbnail
+  const handleImageTap = (p: Product) => {
+    if (p.image_url) {
+      setLightboxImage(p);
+    } else if (auth.authenticated) {
+      setUploadProduct(p);
+    }
+  };
+
   // Filter & Search logic
   const filteredProducts = useMemo(() => {
     const normQuery = normalizeVN(searchQuery.trim());
     return products.filter((p) => {
-      // Category filter
-      if (selectedCategory !== 'all' && p.category !== selectedCategory) {
-        return false;
-      }
-      // Query filter
+      if (selectedCategory !== 'all' && p.category !== selectedCategory) return false;
       if (!normQuery) return true;
-      const matchPlu = p.plu.toLowerCase().includes(normQuery);
-      const matchName = normalizeVN(p.name).includes(normQuery);
-      const matchNote = normalizeVN(p.note || '').includes(normQuery);
-      return matchPlu || matchName || matchNote;
+      return (
+        p.plu.toLowerCase().includes(normQuery) ||
+        normalizeVN(p.name).includes(normQuery) ||
+        normalizeVN(p.note || '').includes(normQuery)
+      );
     });
   }, [products, searchQuery, selectedCategory]);
 
-  // Sorted products
   const sortedProducts = useMemo(() => {
     return [...filteredProducts].sort((a, b) => {
-      if (sortBy === 'plu_asc') {
-        return a.plu.localeCompare(b.plu, undefined, { numeric: true });
-      }
+      if (sortBy === 'plu_asc') return a.plu.localeCompare(b.plu, undefined, { numeric: true });
       return a.name.localeCompare(b.name, 'vi');
     });
   }, [filteredProducts, sortBy]);
 
-  // Unique categories count
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = { all: products.length };
     products.forEach((p) => {
@@ -571,891 +654,531 @@ export default function HomePage() {
     return counts;
   }, [products]);
 
-  // Category Badge Colors & Icon
-  const getCategoryTheme = (category: string) => {
-    switch (category) {
-      case 'Trái Cây Nội':
-        return { bg: '#ecfdf5', color: '#047857', border: '#a7f3d0' };
-      case 'Trái Cây Nhập Khẩu':
-        return { bg: '#f5f3ff', color: '#6d28d9', border: '#ddd6fe' };
-      case 'Rau Củ':
-        return { bg: '#f0fdf4', color: '#15803d', border: '#bbf7d0' };
-      case 'Thuỷ Hải Sản':
-        return { bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' };
-      case 'Thịt & Món Chế Biến':
-        return { bg: '#fffbeb', color: '#b45309', border: '#fde68a' };
-      case 'Bánh Kẹo & Thạch':
-        return { bg: '#fdf2f8', color: '#be185d', border: '#fbcfe8' };
-      default:
-        return { bg: '#f1f5f9', color: '#475569', border: '#cbd5e1' };
-    }
-  };
+  /* ------------------------------------------------------------------ */
+  /* Render helpers                                                       */
+  /* ------------------------------------------------------------------ */
 
-  const scrollToTop = () => {
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  const renderList = () => (
+    <div className="plist">
+      {sortedProducts.map((p) => {
+        const theme = getCategoryTheme(p.category);
+        const isCopied = copiedPlu === p.plu;
+        return (
+          <div
+            key={p.id}
+            className={`prow ${auth.authenticated ? 'admin' : ''} ${isCopied ? 'copied' : ''}`}
+            onClick={() => handleCopyPlu(p.plu, p.name)}
+            role="button"
+            aria-label={`Chép mã PLU ${p.plu} - ${p.name}`}
+          >
+            <div
+              className="pthumb"
+              onClick={(e) => {
+                if (p.image_url || auth.authenticated) {
+                  e.stopPropagation();
+                  handleImageTap(p);
+                }
+              }}
+            >
+              {p.image_url ? (
+                <img src={p.image_url} alt={p.name} loading="lazy" />
+              ) : (
+                <Avatar name={p.name} category={p.category} />
+              )}
+            </div>
+
+            <div className="pinfo">
+              <div className="pname">{p.name}</div>
+              <div className="pmeta">
+                <span className="cat" style={{ color: theme.color }}>
+                  {p.category}
+                </span>
+                <span className="sep" />
+                <span>{p.unit}</span>
+                {p.note && (
+                  <>
+                    <span className="sep" />
+                    <span className="note">{p.note}</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="pplu">
+              <div className="pplu-code">{p.plu}</div>
+              <div className="pplu-hint">
+                {isCopied ? <Check size={11} /> : <Copy size={11} />}
+                {isCopied ? 'Đã chép' : 'Chạm để chép'}
+              </div>
+            </div>
+
+            {auth.authenticated && (
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Sửa sản phẩm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openEditModal(p);
+                }}
+              >
+                <Edit2 size={16} />
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const renderGrid = () => (
+    <div className="pgrid">
+      {sortedProducts.map((p) => {
+        const isCopied = copiedPlu === p.plu;
+        const theme = getCategoryTheme(p.category);
+        return (
+          <div key={p.id} className="pcard">
+            <div className="pcard-media" onClick={() => handleImageTap(p)}>
+              {p.image_url ? (
+                <img src={p.image_url} alt={p.name} loading="lazy" />
+              ) : (
+                <Avatar name={p.name} category={p.category} />
+              )}
+              {auth.authenticated && (
+                <button
+                  type="button"
+                  className="media-btn"
+                  aria-label="Tải ảnh"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setUploadProduct(p);
+                  }}
+                >
+                  <Camera size={15} />
+                </button>
+              )}
+            </div>
+
+            <div className="pcard-body">
+              <div className="pmeta" style={{ marginTop: 0 }}>
+                <span className="cat" style={{ color: theme.color }}>
+                  {p.category}
+                </span>
+                <span className="sep" />
+                <span>{p.unit}</span>
+              </div>
+              <div className="pcard-name">{p.name}</div>
+
+              <button
+                type="button"
+                className={`pcard-plu ${isCopied ? 'copied' : ''}`}
+                onClick={() => handleCopyPlu(p.plu, p.name)}
+              >
+                <div>
+                  <div className="lbl">MÃ PLU</div>
+                  <div className="code">{p.plu}</div>
+                </div>
+                <div className="act">
+                  {isCopied ? <Check size={15} /> : <Copy size={15} />}
+                  <span>{isCopied ? 'Đã chép' : 'Chép'}</span>
+                </div>
+              </button>
+
+              {auth.authenticated && (
+                <div className="pcard-admin">
+                  <button type="button" className="btn btn-ghost" onClick={() => openEditModal(p)}>
+                    <Edit2 size={13} /> Sửa
+                  </button>
+                  <button type="button" className="btn btn-danger" onClick={() => handleDeleteProduct(p.id, p.name)}>
+                    <Trash2 size={13} /> Xóa
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  const renderTable = () => (
+    <div className="table-wrap">
+      <table className="ptable">
+        <thead>
+          <tr>
+            <th style={{ width: 64 }}>Ảnh</th>
+            <th style={{ width: 110 }}>Mã PLU</th>
+            <th>Tên sản phẩm</th>
+            <th>Danh mục</th>
+            <th style={{ width: 70 }}>ĐVT</th>
+            <th>Ghi chú</th>
+            <th style={{ width: 150, textAlign: 'right' }}>Thao tác</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortedProducts.map((p) => {
+            const theme = getCategoryTheme(p.category);
+            const isCopied = copiedPlu === p.plu;
+            return (
+              <tr key={p.id}>
+                <td>
+                  <div className="thumb" onClick={() => handleImageTap(p)}>
+                    {p.image_url ? (
+                      <img src={p.image_url} alt={p.name} />
+                    ) : (
+                      <Avatar name={p.name} category={p.category} />
+                    )}
+                  </div>
+                </td>
+                <td className="plu">{p.plu}</td>
+                <td style={{ fontWeight: 600 }}>{p.name}</td>
+                <td>
+                  <span className="cat-tag" style={{ background: theme.bg, color: theme.color }}>
+                    {p.category}
+                  </span>
+                </td>
+                <td>{p.unit}</td>
+                <td style={{ color: p.note ? '#b45309' : '#cbd5e1', fontSize: 13 }}>{p.note || '—'}</td>
+                <td>
+                  <div className="actions">
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${isCopied ? 'btn-green' : 'btn-ghost'}`}
+                      onClick={() => handleCopyPlu(p.plu, p.name)}
+                    >
+                      {isCopied ? <Check size={14} /> : <Copy size={14} />}
+                      {isCopied ? 'Đã chép' : 'Chép'}
+                    </button>
+                    {auth.authenticated && (
+                      <>
+                        <button type="button" className="icon-btn" title="Tải ảnh" onClick={() => setUploadProduct(p)}>
+                          <Camera size={15} />
+                        </button>
+                        <button type="button" className="icon-btn" title="Sửa" onClick={() => openEditModal(p)}>
+                          <Edit2 size={15} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const renderSkeleton = () => (
+    <div className="plist">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="prow" style={{ cursor: 'default' }}>
+          <div className="skeleton" style={{ width: 48, height: 48, borderRadius: 12 }} />
+          <div>
+            <div className="skeleton" style={{ width: '70%', height: 15, marginBottom: 8 }} />
+            <div className="skeleton" style={{ width: '45%', height: 11 }} />
+          </div>
+          <div className="skeleton" style={{ width: 68, height: 24 }} />
+        </div>
+      ))}
+    </div>
+  );
+
+  /* ------------------------------------------------------------------ */
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* App Header */}
+    <div className="page">
+      {/* Header */}
       <header className="app-header">
-        <div className="container header-content">
-          <div className="brand-section">
+        <div className="wrap header-inner">
+          <div className="brand">
             <div className="brand-logo">WM</div>
-            <div>
+            <div className="brand-text">
               <div className="brand-title">WinMart PLU</div>
-              <div className="brand-subtitle">Tra cứu mã cân &middot; Turso LibSQL &middot; Cloudinary</div>
+              <div className="brand-sub">Tra cứu nhanh mã cân sản phẩm</div>
             </div>
           </div>
 
           <div className="header-actions">
-            {/* Print button (desktop only) */}
             <button
+              type="button"
+              className="icon-btn only-desktop"
               onClick={() => window.print()}
-              className="btn btn-secondary btn-sm hide-on-mobile"
-              title="In bảng tra cứu mã PLU"
+              title="In bảng mã PLU"
             >
-              <Printer size={15} />
-              <span>In mã</span>
+              <Printer size={17} />
             </button>
 
-            {/* Admin status / Login */}
             {auth.authenticated ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    padding: '5px 8px',
-                    background: '#ecfdf5',
-                    borderRadius: '8px',
-                    border: '1px solid #a7f3d0',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    color: '#065f46',
-                  }}
-                  title="Phiên đăng nhập quản trị"
-                >
-                  <span
-                    style={{
-                      width: '7px',
-                      height: '7px',
-                      borderRadius: '50%',
-                      background: '#10b981',
-                      display: 'inline-block',
-                    }}
-                  />
-                  <span>Admin</span>
-                </div>
-
+              <>
+                <span className="admin-pill only-desktop">
+                  <span className="dot" /> Admin
+                </span>
+                <button type="button" className="icon-btn green" onClick={openAddModal} title="Thêm mã PLU">
+                  <Plus size={18} />
+                </button>
                 <button
-                  onClick={() => setIsSettingsOpen(true)}
-                  className="btn btn-secondary btn-sm btn-icon"
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => {
+                    setTestResult(null);
+                    setIsSettingsOpen(true);
+                  }}
                   title="Cấu hình Cloudinary"
                 >
-                  <Settings size={15} />
+                  <Settings size={17} />
                 </button>
-
-                <button
-                  onClick={() => {
-                    setProductForm({
-                      plu: '',
-                      name: '',
-                      category: 'Trái Cây Nội',
-                      unit: 'kg',
-                      note: '',
-                      image_url: '',
-                    });
-                    setProductImageFile(null);
-                    setProductImagePreview(null);
-                    setProductImageMode('upload');
-                    setIsAddOpen(true);
-                  }}
-                  className="btn btn-emerald btn-sm"
-                  title="Thêm sản phẩm mới"
-                >
-                  <Plus size={15} />
-                  <span className="hide-on-mobile">Thêm mã</span>
+                <button type="button" className="icon-btn" onClick={handleLogout} title="Đăng xuất">
+                  <LogOut size={17} />
                 </button>
-
-                <button
-                  onClick={handleLogout}
-                  className="btn btn-secondary btn-sm btn-icon"
-                  title="Đăng xuất"
-                >
-                  <LogOut size={15} />
-                </button>
-              </div>
+              </>
             ) : (
-              <button
-                onClick={() => setIsLoginOpen(true)}
-                className="btn btn-primary btn-sm"
-              >
-                <LogIn size={14} />
-                <span>Đăng nhập</span>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => setIsLoginOpen(true)}>
+                <LogIn size={15} />
+                <span>Admin</span>
               </button>
             )}
           </div>
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <main className="container" style={{ flex: 1 }}>
-        {/* Search Hero Section (Sticky on mobile for instant reach) */}
-        <div className="search-hero">
-          <div className="search-input-wrapper">
-            <Search className="search-icon-left" size={20} />
+      {/* Sticky search + categories */}
+      <div className="search-block">
+        <div className="wrap">
+          <div className="search-field">
+            <Search className="s-icon" size={20} />
             <input
               ref={searchInputRef}
-              type="text"
+              type="search"
+              inputMode="search"
+              enterKeyHint="search"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Tìm mã PLU hoặc tên (VD: 46040, bơ, táo)..."
+              placeholder="Nhập mã PLU hoặc tên sản phẩm"
               className="search-input"
-              autoFocus
+              aria-label="Tìm kiếm sản phẩm"
             />
-            <div className="search-shortcut-badge">
-              {searchQuery ? (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  style={{
-                    background: '#f1f5f9',
-                    border: 'none',
-                    borderRadius: '50%',
-                    cursor: 'pointer',
-                    color: '#64748b',
-                    width: '28px',
-                    height: '28px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                  title="Xóa tìm kiếm (ESC)"
-                  aria-label="Xóa tìm kiếm"
-                >
-                  <X size={15} />
-                </button>
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <span className="key-badge">Phím /</span>
-                  <span className="key-badge">ESC</span>
-                </div>
-              )}
-            </div>
+            {searchQuery ? (
+              <button
+                type="button"
+                className="search-clear"
+                onClick={() => {
+                  setSearchQuery('');
+                  searchInputRef.current?.focus();
+                }}
+                aria-label="Xóa tìm kiếm"
+              >
+                <X size={16} />
+              </button>
+            ) : (
+              <span className="kbd-hint only-desktop">/</span>
+            )}
           </div>
 
-          {/* Category Filter Pills (Horizontal touch-friendly scroll) */}
-          <div className="category-pills">
+          <div className="chips">
             <button
+              type="button"
+              className={`chip ${selectedCategory === 'all' ? 'active' : ''}`}
               onClick={() => setSelectedCategory('all')}
-              className={`pill-btn ${selectedCategory === 'all' ? 'active' : ''}`}
             >
-              <span>Tất cả</span>
-              <span className="pill-count">{categoryCounts.all || 0}</span>
+              Tất cả <span className="count">{categoryCounts.all || 0}</span>
             </button>
-
-            {[
-              'Trái Cây Nội',
-              'Trái Cây Nhập Khẩu',
-              'Rau Củ',
-              'Thuỷ Hải Sản',
-              'Thịt & Món Chế Biến',
-              'Bánh Kẹo & Thạch',
-            ].map((cat) => {
-              const count = categoryCounts[cat] || 0;
-              return (
-                <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`pill-btn ${selectedCategory === cat ? 'active' : ''}`}
-                >
-                  <span>{cat}</span>
-                  <span className="pill-count">{count}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Results Controls Toolbar */}
-        <div className="toolbar-row">
-          <div className="result-count-text">
-            Tìm thấy <strong>{sortedProducts.length}</strong> sản phẩm
-            {selectedCategory !== 'all' && (
-              <span className="hide-on-mobile"> trong <em>{selectedCategory}</em></span>
-            )}
-            {searchQuery && (
-              <span> với &ldquo;{searchQuery}&rdquo;</span>
-            )}
-          </div>
-
-          <div className="view-controls">
-            {/* Sort Dropdown */}
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="form-select"
-              style={{ padding: '6px 10px', fontSize: '12px', width: 'auto' }}
-            >
-              <option value="plu_asc">PLU tăng dần</option>
-              <option value="name_asc">Tên A &rarr; Z</option>
-            </select>
-
-            {/* View toggle (Grid / List / Table) */}
-            <div style={{ display: 'flex', background: '#f1f5f9', padding: '2px', borderRadius: '8px' }}>
+            {CATEGORIES.map((cat) => (
               <button
-                onClick={() => setViewMode('grid')}
-                className={`btn btn-sm btn-icon ${viewMode === 'grid' ? 'btn-secondary' : ''}`}
-                style={{
-                  background: viewMode === 'grid' ? 'white' : 'transparent',
-                  border: 'none',
-                  boxShadow: viewMode === 'grid' ? 'var(--shadow-sm)' : 'none',
-                }}
-                title="Dạng lưới"
+                type="button"
+                key={cat}
+                className={`chip ${selectedCategory === cat ? 'active' : ''}`}
+                onClick={() => setSelectedCategory(cat)}
               >
-                <LayoutGrid size={15} />
+                {cat} <span className="count">{categoryCounts[cat] || 0}</span>
               </button>
-              <button
-                onClick={() => setViewMode('list')}
-                className={`btn btn-sm btn-icon ${viewMode === 'list' ? 'btn-secondary' : ''}`}
-                style={{
-                  background: viewMode === 'list' ? 'white' : 'transparent',
-                  border: 'none',
-                  boxShadow: viewMode === 'list' ? 'var(--shadow-sm)' : 'none',
-                }}
-                title="Dạng danh sách gọn"
-              >
-                <List size={15} />
-              </button>
-              <button
-                onClick={() => setViewMode('table')}
-                className={`btn btn-sm btn-icon hide-on-mobile ${viewMode === 'table' ? 'btn-secondary' : ''}`}
-                style={{
-                  background: viewMode === 'table' ? 'white' : 'transparent',
-                  border: 'none',
-                  boxShadow: viewMode === 'table' ? 'var(--shadow-sm)' : 'none',
-                }}
-                title="Dạng bảng chi tiết"
-              >
-                <TableIcon size={15} />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Product List Content */}
-        {loading ? (
-          /* Skeleton Loading */
-          <div className="product-grid">
-            {Array.from({ length: 6 }).map((_, idx) => (
-              <div key={idx} className="product-card" style={{ height: '240px' }}>
-                <div className="skeleton" style={{ width: '100%', height: '120px' }} />
-                <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <div className="skeleton" style={{ width: '45%', height: '14px' }} />
-                  <div className="skeleton" style={{ width: '80%', height: '18px' }} />
-                  <div className="skeleton" style={{ width: '100%', height: '36px', marginTop: '6px' }} />
-                </div>
-              </div>
             ))}
           </div>
-        ) : sortedProducts.length === 0 ? (
-          /* Empty State */
-          <div
-            style={{
-              padding: '50px 16px',
-              textAlign: 'center',
-              background: 'white',
-              borderRadius: '16px',
-              border: '1px solid var(--border-subtle)',
-              margin: '16px 0 40px',
-            }}
-          >
-            <div
-              style={{
-                width: '56px',
-                height: '56px',
-                background: '#fef2f2',
-                color: '#ef4444',
-                borderRadius: '50%',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                marginBottom: '12px',
-              }}
-            >
-              <AlertCircle size={28} />
+        </div>
+      </div>
+
+      {/* Main */}
+      <main className="main">
+        <div className="wrap">
+          <h1 style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>
+            Tra cứu mã PLU WinMart
+          </h1>
+
+          <div className="toolbar">
+            <div className="result-count">
+              <strong>{sortedProducts.length}</strong> sản phẩm
+              {searchQuery && <> cho &ldquo;{searchQuery}&rdquo;</>}
             </div>
-            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '6px' }}>
-              Không tìm thấy sản phẩm phù hợp
-            </h3>
-            <p style={{ color: '#64748b', fontSize: '13px', maxWidth: '380px', margin: '0 auto 16px' }}>
-              Không có mã PLU hoặc tên sản phẩm nào khớp với &ldquo;{searchQuery}&rdquo;.
-            </p>
-            <button
-              onClick={() => {
-                setSearchQuery('');
-                setSelectedCategory('all');
-              }}
-              className="btn btn-secondary btn-sm"
-            >
-              Đặt lại bộ lọc
-            </button>
-          </div>
-        ) : viewMode === 'grid' ? (
-          /* Grid View (2-Column on Mobile, 4+ on Desktop) */
-          <div className="product-grid">
-            {sortedProducts.map((p) => {
-              const theme = getCategoryTheme(p.category);
-              const isCopied = copiedPlu === p.plu;
-              return (
-                <div key={p.id} className="product-card">
-                  {/* Image container */}
-                  <div
-                    className="card-image-box"
-                    onClick={() => {
-                      if (p.image_url) {
-                        setLightboxImage({ url: p.image_url, title: p.name, plu: p.plu });
-                      } else {
-                        if (auth.authenticated) {
-                          setUploadProduct(p);
-                        } else {
-                          setIsLoginOpen(true);
-                          addToast('Vui lòng đăng nhập quản trị để tải ảnh sản phẩm', 'info');
-                        }
-                      }
-                    }}
-                  >
-                    {p.image_url ? (
-                      <img
-                        src={p.image_url}
-                        alt={p.name}
-                        className="card-img"
-                        loading="lazy"
-                      />
-                    ) : (
-                      <div className="card-image-empty">
-                        <ImageIcon size={26} />
-                        <span>Chưa có ảnh</span>
-                      </div>
-                    )}
-
-                    {/* Camera / Upload trigger */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (auth.authenticated) {
-                          setUploadProduct(p);
-                        } else {
-                          setIsLoginOpen(true);
-                          addToast('Vui lòng đăng nhập quản trị để tải ảnh', 'info');
-                        }
-                      }}
-                      className="card-upload-overlay"
-                      title="Tải ảnh lên cho sản phẩm này"
-                    >
-                      <Camera size={13} />
-                      <span>{p.image_url ? 'Đổi' : 'Up'}</span>
-                    </button>
-                  </div>
-
-                  {/* Body */}
-                  <div className="card-body">
-                    <div className="card-header-meta">
-                      <span
-                        className="category-tag"
-                        style={{
-                          background: theme.bg,
-                          color: theme.color,
-                          border: `1px solid ${theme.border}`,
-                        }}
-                      >
-                        {p.category}
-                      </span>
-                      <span className="unit-tag">ĐVT: {p.unit}</span>
-                    </div>
-
-                    <h4 className="product-name-title" title={p.name}>
-                      {p.name}
-                    </h4>
-
-                    {p.note && (
-                      <div className="product-note-text" title={p.note}>
-                        &bull; {p.note}
-                      </div>
-                    )}
-
-                    {/* Prominent PLU Box with 1-click copy */}
-                    <div
-                      className="plu-box"
-                      onClick={() => handleCopyPlu(p.plu, p.name)}
-                      title="Chạm để sao chép mã PLU"
-                    >
-                      <div>
-                        <div className="plu-label">MÃ CÂN PLU</div>
-                        <div className="plu-code">{p.plu}</div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleCopyPlu(p.plu, p.name);
-                        }}
-                        className={`plu-copy-btn ${isCopied ? 'copied' : ''}`}
-                        title="Sao chép mã PLU"
-                      >
-                        {isCopied ? <Check size={13} /> : <Copy size={13} />}
-                        <span>{isCopied ? 'Đã chép' : 'Chép'}</span>
-                      </button>
-                    </div>
-
-                    {/* Admin Actions */}
-                    {auth.authenticated && (
-                      <div className="card-admin-bar">
-                        <button
-                          onClick={() => {
-                            setEditProduct(p);
-                            setProductForm({
-                              plu: p.plu,
-                              name: p.name,
-                              category: p.category,
-                              unit: p.unit,
-                              note: p.note,
-                              image_url: p.image_url,
-                            });
-                            setProductImageFile(null);
-                            setProductImagePreview(p.image_url || null);
-                            setProductImageMode(p.image_url ? 'url' : 'upload');
-                          }}
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '3px 7px', fontSize: '11px' }}
-                          title="Sửa thông tin"
-                        >
-                          <Edit2 size={12} />
-                          <span>Sửa</span>
-                        </button>
-                        <button
-                          onClick={() => handleDeleteProduct(p.id, p.name)}
-                          className="btn btn-secondary btn-sm"
-                          style={{ padding: '3px 7px', fontSize: '11px', color: '#e11d48' }}
-                          title="Xóa mã này"
-                        >
-                          <Trash2 size={12} />
-                          <span>Xóa</span>
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : viewMode === 'list' ? (
-          /* Dense Mobile List View (Super fast for cashiers) */
-          <div className="product-list-view">
-            {sortedProducts.map((p) => {
-              const theme = getCategoryTheme(p.category);
-              const isCopied = copiedPlu === p.plu;
-              return (
-                <div
-                  key={p.id}
-                  className="list-row-card"
-                  onClick={() => handleCopyPlu(p.plu, p.name)}
+            <div className="toolbar-right">
+              <select
+                className="sort-select"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as 'plu_asc' | 'name_asc')}
+                aria-label="Sắp xếp"
+              >
+                <option value="plu_asc">Theo mã</option>
+                <option value="name_asc">Theo tên</option>
+              </select>
+              <div className="seg" role="tablist" aria-label="Kiểu hiển thị">
+                <button
+                  type="button"
+                  className={viewMode === 'list' ? 'active' : ''}
+                  onClick={() => setViewMode('list')}
+                  aria-label="Danh sách"
                 >
-                  {/* Thumbnail */}
-                  <div
-                    className="list-thumbnail"
-                    onClick={(e) => {
-                      if (p.image_url) {
-                        e.stopPropagation();
-                        setLightboxImage({ url: p.image_url, title: p.name, plu: p.plu });
-                      } else if (auth.authenticated) {
-                        e.stopPropagation();
-                        setUploadProduct(p);
-                      }
-                    }}
+                  <List size={16} />
+                </button>
+                <button
+                  type="button"
+                  className={viewMode === 'grid' ? 'active' : ''}
+                  onClick={() => setViewMode('grid')}
+                  aria-label="Lưới ảnh"
+                >
+                  <LayoutGrid size={16} />
+                </button>
+                {!isMobile && (
+                  <button
+                    type="button"
+                    className={viewMode === 'table' ? 'active' : ''}
+                    onClick={() => setViewMode('table')}
+                    aria-label="Bảng"
                   >
-                    {p.image_url ? (
-                      <img src={p.image_url} alt={p.name} loading="lazy" />
-                    ) : (
-                      <ImageIcon size={18} color="#94a3b8" />
-                    )}
-                  </div>
-
-                  {/* Info */}
-                  <div className="list-info">
-                    <div className="list-title" title={p.name}>
-                      {p.name}
-                    </div>
-                    <div className="list-meta">
-                      <span
-                        className="category-tag"
-                        style={{
-                          background: theme.bg,
-                          color: theme.color,
-                          border: `1px solid ${theme.border}`,
-                          fontSize: '10px',
-                          padding: '1px 5px',
-                        }}
-                      >
-                        {p.category}
-                      </span>
-                      <span className="unit-tag" style={{ fontSize: '10px' }}>{p.unit}</span>
-                      {p.note && (
-                        <span className="product-note-text" style={{ fontSize: '10px' }}>
-                          {p.note}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* PLU Badge & Action */}
-                  <div className="list-plu-section">
-                    <div
-                      className="list-plu-badge"
-                      style={{
-                        background: isCopied ? '#ecfdf5' : '#fff1f2',
-                        borderColor: isCopied ? '#a7f3d0' : '#fecdd3',
-                        color: isCopied ? '#059669' : '#e11d48',
-                      }}
-                      title="Nhấn để sao chép mã"
-                    >
-                      {p.plu}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleCopyPlu(p.plu, p.name);
-                      }}
-                      className={`plu-copy-btn ${isCopied ? 'copied' : ''}`}
-                    >
-                      {isCopied ? <Check size={14} /> : <Copy size={14} />}
-                    </button>
-
-                    {auth.authenticated && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditProduct(p);
-                          setProductForm({
-                            plu: p.plu,
-                            name: p.name,
-                            category: p.category,
-                            unit: p.unit,
-                            note: p.note,
-                            image_url: p.image_url,
-                          });
-                          setProductImageFile(null);
-                          setProductImagePreview(p.image_url || null);
-                          setProductImageMode(p.image_url ? 'url' : 'upload');
-                        }}
-                        className="btn btn-secondary btn-sm btn-icon"
-                        title="Sửa"
-                      >
-                        <Edit2 size={13} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+                    <TableIcon size={16} />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-        ) : (
-          /* Table View */
-          <div className="table-wrapper">
-            <table className="quick-table">
+
+          {loading ? (
+            renderSkeleton()
+          ) : sortedProducts.length === 0 ? (
+            <div className="empty">
+              <div className="empty-icon">
+                <Search size={26} />
+              </div>
+              <h3>Không tìm thấy sản phẩm</h3>
+              <p>
+                {searchQuery
+                  ? <>Không có mã hoặc tên nào khớp &ldquo;{searchQuery}&rdquo;.</>
+                  : 'Danh mục này chưa có sản phẩm.'}
+              </p>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedCategory('all');
+                }}
+              >
+                Xóa bộ lọc
+              </button>
+            </div>
+          ) : viewMode === 'list' ? (
+            renderList()
+          ) : viewMode === 'grid' ? (
+            renderGrid()
+          ) : (
+            renderTable()
+          )}
+
+          {/* Print-only table */}
+          <div className="print-only">
+            <h2 style={{ textAlign: 'center', marginBottom: 12 }}>BẢNG TRA CỨU MÃ CÂN PLU WINMART</h2>
+            <table>
               <thead>
                 <tr>
-                  <th style={{ width: '60px' }}>Ảnh</th>
-                  <th style={{ width: '110px' }}>Mã PLU</th>
+                  <th>Mã PLU</th>
                   <th>Tên sản phẩm</th>
                   <th>Danh mục</th>
-                  <th style={{ width: '70px' }}>ĐVT</th>
+                  <th>ĐVT</th>
                   <th>Ghi chú</th>
-                  <th style={{ textAlign: 'right', width: '130px' }}>Thao tác</th>
                 </tr>
               </thead>
               <tbody>
-                {sortedProducts.map((p) => {
-                  const theme = getCategoryTheme(p.category);
-                  const isCopied = copiedPlu === p.plu;
-                  return (
-                    <tr key={p.id}>
-                      <td>
-                        <div
-                          style={{
-                            width: '40px',
-                            height: '40px',
-                            borderRadius: '8px',
-                            background: '#f1f5f9',
-                            overflow: 'hidden',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                          }}
-                          onClick={() => {
-                            if (p.image_url) {
-                              setLightboxImage({ url: p.image_url, title: p.name, plu: p.plu });
-                            } else if (auth.authenticated) {
-                              setUploadProduct(p);
-                            } else {
-                              setIsLoginOpen(true);
-                            }
-                          }}
-                        >
-                          {p.image_url ? (
-                            <img
-                              src={p.image_url}
-                              alt={p.name}
-                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                            />
-                          ) : (
-                            <ImageIcon size={16} color="#94a3b8" />
-                          )}
-                        </div>
-                      </td>
-                      <td>
-                        <span
-                          style={{
-                            fontSize: '17px',
-                            fontWeight: 800,
-                            color: '#e11d48',
-                            letterSpacing: '0.5px',
-                            fontVariantNumeric: 'tabular-nums',
-                          }}
-                        >
-                          {p.plu}
-                        </span>
-                      </td>
-                      <td>
-                        <span style={{ fontWeight: 600, color: '#0f172a' }}>{p.name}</span>
-                      </td>
-                      <td>
-                        <span
-                          className="category-tag"
-                          style={{
-                            background: theme.bg,
-                            color: theme.color,
-                            border: `1px solid ${theme.border}`,
-                          }}
-                        >
-                          {p.category}
-                        </span>
-                      </td>
-                      <td>
-                        <span className="unit-tag">{p.unit}</span>
-                      </td>
-                      <td>
-                        {p.note ? (
-                          <span className="product-note-text">{p.note}</span>
-                        ) : (
-                          <span style={{ color: '#cbd5e1' }}>-</span>
-                        )}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
-                          <button
-                            onClick={() => handleCopyPlu(p.plu, p.name)}
-                            className={`plu-copy-btn ${isCopied ? 'copied' : ''}`}
-                            title="Sao chép PLU"
-                          >
-                            {isCopied ? <Check size={13} /> : <Copy size={13} />}
-                            <span className="hide-on-mobile">{isCopied ? 'Đã chép' : 'Chép'}</span>
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              if (auth.authenticated) {
-                                setUploadProduct(p);
-                              } else {
-                                setIsLoginOpen(true);
-                                addToast('Cần đăng nhập để tải ảnh', 'info');
-                              }
-                            }}
-                            className="btn btn-secondary btn-sm btn-icon"
-                            title="Tải ảnh lên"
-                          >
-                            <Camera size={13} />
-                          </button>
-
-                          {auth.authenticated && (
-                            <>
-                              <button
-                                onClick={() => {
-                                  setEditProduct(p);
-                                  setProductForm({
-                                    plu: p.plu,
-                                    name: p.name,
-                                    category: p.category,
-                                    unit: p.unit,
-                                    note: p.note,
-                                    image_url: p.image_url,
-                                  });
-                                  setProductImageFile(null);
-                                  setProductImagePreview(p.image_url || null);
-                                  setProductImageMode(p.image_url ? 'url' : 'upload');
-                                }}
-                                className="btn btn-secondary btn-sm btn-icon"
-                                title="Sửa"
-                              >
-                                <Edit2 size={13} />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteProduct(p.id, p.name)}
-                                className="btn btn-secondary btn-sm btn-icon"
-                                style={{ color: '#e11d48' }}
-                                title="Xóa"
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {sortedProducts.map((p) => (
+                  <tr key={p.id}>
+                    <td className="plu">{p.plu}</td>
+                    <td>{p.name}</td>
+                    <td>{p.category}</td>
+                    <td>{p.unit}</td>
+                    <td>{p.note}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        )}
+        </div>
       </main>
 
-      {/* Floating Scroll-to-Top Button */}
-      {showScrollTop && (
+      <footer className="footer">
+        <div className="wrap">WinMart PLU Quick Search</div>
+      </footer>
+
+      {showScrollTop && !anyModalOpen && (
         <button
-          onClick={scrollToTop}
-          className="fab-top-btn"
-          title="Lên đầu trang"
+          type="button"
+          className="fab-top"
+          onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
           aria-label="Lên đầu trang"
         >
           <ArrowUp size={20} />
         </button>
       )}
 
-      {/* Hidden Print Table for clean paper printing */}
-      <div className="print-table" style={{ display: 'none' }}>
-        <h2 style={{ textAlign: 'center', marginBottom: '16px' }}>BẢNG TRA CỨU MÃ CÂN PLU SIÊU THỊ WINMART</h2>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr>
-              <th style={{ border: '1px solid black', padding: '6px' }}>Mã PLU</th>
-              <th style={{ border: '1px solid black', padding: '6px' }}>Tên Sản Phẩm</th>
-              <th style={{ border: '1px solid black', padding: '6px' }}>Danh Mục</th>
-              <th style={{ border: '1px solid black', padding: '6px' }}>ĐVT</th>
-              <th style={{ border: '1px solid black', padding: '6px' }}>Ghi Chú</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedProducts.map((p) => (
-              <tr key={p.id}>
-                <td style={{ border: '1px solid black', padding: '6px', fontWeight: 'bold', fontSize: '14pt' }}>{p.plu}</td>
-                <td style={{ border: '1px solid black', padding: '6px' }}>{p.name}</td>
-                <td style={{ border: '1px solid black', padding: '6px' }}>{p.category}</td>
-                <td style={{ border: '1px solid black', padding: '6px' }}>{p.unit}</td>
-                <td style={{ border: '1px solid black', padding: '6px' }}>{p.note}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {/* ---------------- MODALS ---------------- */}
 
-      {/* Footer */}
-      <footer
-        style={{
-          background: 'white',
-          borderTop: '1px solid var(--border-subtle)',
-          padding: '16px 0',
-          marginTop: 'auto',
-          fontSize: '12px',
-          color: '#64748b',
-          textAlign: 'center',
-        }}
-      >
-        <div className="container">
-          <p>
-            WinMart PLU Quick Search &bull; Turso LibSQL Cloud &bull; Cloudinary Image Storage
-          </p>
-          <p style={{ marginTop: '4px', fontSize: '11px', color: '#94a3b8' }}>
-            Thiết kế tối ưu cho điện thoại di động & màn hình thu ngân POS
-          </p>
-        </div>
-      </footer>
-
-      {/* --- MODALS --- */}
-
-      {/* 1. Login Modal */}
+      {/* Login */}
       {isLoginOpen && (
-        <div className="modal-overlay" onClick={() => setIsLoginOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title">Đăng Nhập Quản Trị Viên</h3>
-              <button onClick={() => setIsLoginOpen(false)} className="modal-close-btn">
-                <X size={20} />
+        <div className="overlay" onClick={() => setIsLoginOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div>
+                <div className="modal-title">Đăng nhập quản trị</div>
+                <div className="modal-sub">Để thêm, sửa mã và tải ảnh sản phẩm</div>
+              </div>
+              <button type="button" className="modal-close" onClick={() => setIsLoginOpen(false)} aria-label="Đóng">
+                <X size={18} />
               </button>
             </div>
             <form onSubmit={handleLogin}>
-              <div
-                style={{
-                  background: '#f8fafc',
-                  border: '1px solid var(--border-subtle)',
-                  borderRadius: '10px',
-                  padding: '10px 12px',
-                  marginBottom: '14px',
-                  fontSize: '12px',
-                  color: '#475569',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: '#0f172a' }}>
-                  <Clock size={15} color="#059669" />
-                  <span>Phiên đăng nhập:</span>
-                </div>
-                <p style={{ marginTop: '2px' }}>
-                  Phiên đăng nhập duy trì liên tục và tự động kết thúc lúc 23:59:59 của ngày hôm nay.
-                </p>
+              <div className="info-box" style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                <Clock size={15} style={{ flexShrink: 0, marginTop: 1 }} color="#059669" />
+                <span>Phiên đăng nhập tự động kết thúc lúc 23:59 hôm nay.</span>
               </div>
-
-              <div className="form-group">
-                <label className="form-label">Tài khoản</label>
+              <div className="field">
+                <label htmlFor="login-user">Tài khoản</label>
                 <input
+                  id="login-user"
+                  className="input"
                   type="text"
                   required
+                  autoComplete="username"
                   value={loginForm.username}
                   onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
-                  placeholder="wm_admin"
-                  className="form-input"
                 />
               </div>
-
-              <div className="form-group">
-                <label className="form-label">Mật khẩu</label>
+              <div className="field">
+                <label htmlFor="login-pass">Mật khẩu</label>
                 <input
+                  id="login-pass"
+                  className="input"
                   type="password"
                   required
+                  autoComplete="current-password"
                   value={loginForm.password}
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                  placeholder="Mật khẩu"
-                  className="form-input"
                 />
               </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
-                <button
-                  type="button"
-                  onClick={() => setIsLoginOpen(false)}
-                  className="btn btn-secondary"
-                >
+              <div className="modal-foot">
+                <button type="button" className="btn btn-ghost" onClick={() => setIsLoginOpen(false)}>
                   Hủy
                 </button>
-                <button
-                  type="submit"
-                  disabled={loginLoading}
-                  className="btn btn-primary"
-                >
+                <button type="submit" className="btn btn-primary" disabled={loginLoading}>
                   {loginLoading ? 'Đang xác thực...' : 'Đăng nhập'}
                 </button>
               </div>
@@ -1464,28 +1187,24 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* 2. Image Upload Modal */}
+      {/* Upload image */}
       {uploadProduct && (
-        <div className="modal-overlay" onClick={() => !uploading && setUploadProduct(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h3 className="modal-title">Tải Ảnh Lên Cloudinary</h3>
-                <div style={{ fontSize: '13px', color: '#64748b' }}>
-                  {uploadProduct.name} &bull; Mã PLU: <strong style={{ color: '#e11d48' }}>{uploadProduct.plu}</strong>
+        <div className="overlay" onClick={closeUploadModal}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div style={{ minWidth: 0 }}>
+                <div className="modal-title">Ảnh sản phẩm</div>
+                <div className="modal-sub">
+                  {uploadProduct.name} · <strong style={{ color: '#be123c' }}>{uploadProduct.plu}</strong>
                 </div>
               </div>
-              <button
-                onClick={() => !uploading && setUploadProduct(null)}
-                className="modal-close-btn"
-              >
-                <X size={20} />
+              <button type="button" className="modal-close" onClick={closeUploadModal} aria-label="Đóng">
+                <X size={18} />
               </button>
             </div>
-
             <form onSubmit={handleUploadImage}>
-              {/* Dropzone with photo/camera support */}
-              <label className="dropzone" style={{ display: 'block', marginBottom: '14px' }}>
+              <label className="dropzone">
                 <input
                   type="file"
                   accept="image/png, image/jpeg, image/webp"
@@ -1493,75 +1212,26 @@ export default function HomePage() {
                   style={{ display: 'none' }}
                 />
                 {uploadPreview ? (
-                  <div>
-                    <img
-                      src={uploadPreview}
-                      alt="Preview"
-                      style={{
-                        maxHeight: '170px',
-                        maxWidth: '100%',
-                        borderRadius: '10px',
-                        objectFit: 'contain',
-                        margin: '0 auto',
-                        boxShadow: 'var(--shadow-sm)',
-                      }}
-                    />
-                    <div style={{ marginTop: '8px', fontSize: '12px', color: '#059669', fontWeight: 600 }}>
-                      Nhấp để chọn hoặc chụp ảnh khác
+                  <>
+                    <img src={uploadPreview} alt="Xem trước" className="dz-preview" />
+                    <div className="dz-sub" style={{ color: '#059669', fontWeight: 600, marginTop: 8 }}>
+                      Chạm để chọn ảnh khác
                     </div>
-                  </div>
+                  </>
                 ) : (
-                  <div>
-                    <Camera size={34} color="#64748b" style={{ margin: '0 auto 6px' }} />
-                    <div style={{ fontSize: '14px', fontWeight: 600, color: '#1e293b' }}>
-                      Chụp ảnh hoặc chọn ảnh từ máy
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-                      JPG, PNG, WEBP &bull; Tải trực tiếp lên Cloudinary
-                    </div>
-                  </div>
+                  <>
+                    <Camera size={32} className="dz-icon" />
+                    <div className="dz-title">Chụp hoặc chọn ảnh</div>
+                    <div className="dz-sub">JPG, PNG, WEBP · tối đa 10MB</div>
+                  </>
                 )}
               </label>
-
-              <div
-                style={{
-                  background: '#f8fafc',
-                  padding: '10px 12px',
-                  borderRadius: '10px',
-                  fontSize: '12px',
-                  color: '#64748b',
-                  marginBottom: '18px',
-                  border: '1px solid var(--border-subtle)',
-                }}
-              >
-                <div style={{ fontWeight: 600, color: '#334155', marginBottom: '2px' }}>
-                  Lưu trữ đám mây Cloudinary:
-                </div>
-                Ảnh được tải lên máy chủ Cloudinary và liên kết URL tự động lưu vào cơ sở dữ liệu Turso.
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
-                <button
-                  type="button"
-                  disabled={uploading}
-                  onClick={() => {
-                    if (uploadPreview && uploadPreview.startsWith('blob:')) {
-                      URL.revokeObjectURL(uploadPreview);
-                    }
-                    setUploadProduct(null);
-                    setUploadFile(null);
-                    setUploadPreview(null);
-                  }}
-                  className="btn btn-secondary"
-                >
+              <div className="modal-foot">
+                <button type="button" className="btn btn-ghost" onClick={closeUploadModal} disabled={uploading}>
                   Hủy
                 </button>
-                <button
-                  type="submit"
-                  disabled={uploading || !uploadFile}
-                  className="btn btn-primary"
-                >
-                  {uploading ? 'Đang tải lên Cloud...' : 'Xác nhận tải ảnh'}
+                <button type="submit" className="btn btn-primary" disabled={uploading || !uploadFile}>
+                  {uploading ? 'Đang tải lên...' : 'Tải ảnh lên'}
                 </button>
               </div>
             </form>
@@ -1569,529 +1239,345 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* 3. Add / Edit Product Modal */}
+      {/* Add / Edit product */}
       {(isAddOpen || editProduct) && (
-        <div
-          className="modal-overlay"
-          onClick={() => {
-            if (productImagePreview && productImagePreview.startsWith('blob:')) {
-              URL.revokeObjectURL(productImagePreview);
-            }
-            setIsAddOpen(false);
-            setEditProduct(null);
-          }}
-        >
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title">
-                {editProduct ? 'Chỉnh Sửa Sản Phẩm' : 'Thêm Mã PLU Mới'}
-              </h3>
-              <button
-                onClick={() => {
-                  if (productImagePreview && productImagePreview.startsWith('blob:')) {
-                    URL.revokeObjectURL(productImagePreview);
-                  }
-                  setIsAddOpen(false);
-                  setEditProduct(null);
-                }}
-                className="modal-close-btn"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveProduct}>
-              <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '10px' }}>
-                <div className="form-group">
-                  <label className="form-label">Mã PLU</label>
-                  <input
-                    type="text"
-                    required
-                    value={productForm.plu}
-                    onChange={(e) => setProductForm({ ...productForm, plu: e.target.value })}
-                    placeholder="46040"
-                    className="form-input"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Tên sản phẩm</label>
-                  <input
-                    type="text"
-                    required
-                    value={productForm.name}
-                    onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
-                    placeholder="Ví dụ: Bơ sáp (tròn)"
-                    className="form-input"
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px', gap: '10px' }}>
-                <div className="form-group">
-                  <label className="form-label">Danh mục</label>
-                  <select
-                    value={productForm.category}
-                    onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}
-                    className="form-select"
-                  >
-                    <option value="Trái Cây Nội">Trái Cây Nội</option>
-                    <option value="Trái Cây Nhập Khẩu">Trái Cây Nhập Khẩu</option>
-                    <option value="Rau Củ">Rau Củ</option>
-                    <option value="Thuỷ Hải Sản">Thuỷ Hải Sản</option>
-                    <option value="Thịt & Món Chế Biến">Thịt & Món Chế Biến</option>
-                    <option value="Bánh Kẹo & Thạch">Bánh Kẹo & Thạch</option>
-                  </select>
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Đơn vị</label>
-                  <select
-                    value={productForm.unit}
-                    onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
-                    className="form-select"
-                  >
-                    <option value="kg">kg</option>
-                    <option value="quả">quả</option>
-                    <option value="khay">khay</option>
-                    <option value="gói">gói</option>
-                    <option value="hộp">hộp</option>
-                    <option value="túi">túi</option>
-                    <option value="con">con</option>
-                    <option value="cốc">cốc</option>
-                    <option value="phần">phần</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Ghi chú (Tùy chọn)</label>
-                <input
-                  type="text"
-                  value={productForm.note}
-                  onChange={(e) => setProductForm({ ...productForm, note: e.target.value })}
-                  placeholder="Ví dụ: Hàng tươi, size lớn, mã phụ..."
-                  className="form-input"
-                />
-              </div>
-
-              {/* Product Image Selection */}
-              <div className="form-group">
-                <label className="form-label">Hình ảnh sản phẩm</label>
-
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                  <button
-                    type="button"
-                    onClick={() => setProductImageMode('upload')}
-                    className="btn btn-sm"
-                    style={{
-                      background: productImageMode === 'upload' ? '#f1f5f9' : 'transparent',
-                      border: '1.5px solid',
-                      borderColor: productImageMode === 'upload' ? '#0f172a' : '#e2e8f0',
-                      fontWeight: productImageMode === 'upload' ? 700 : 500,
-                      color: productImageMode === 'upload' ? '#0f172a' : '#64748b',
-                    }}
-                  >
-                    <Camera size={13} />
-                    <span>Tải ảnh / Chụp ảnh</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setProductImageMode('url')}
-                    className="btn btn-sm"
-                    style={{
-                      background: productImageMode === 'url' ? '#f1f5f9' : 'transparent',
-                      border: '1.5px solid',
-                      borderColor: productImageMode === 'url' ? '#0f172a' : '#e2e8f0',
-                      fontWeight: productImageMode === 'url' ? 700 : 500,
-                      color: productImageMode === 'url' ? '#0f172a' : '#64748b',
-                    }}
-                  >
-                    <ExternalLink size={13} />
-                    <span>Dán URL ảnh</span>
-                  </button>
-                </div>
-
-                {productImageMode === 'upload' ? (
-                  <div>
-                    <label className="dropzone" style={{ display: 'block', padding: '14px', cursor: 'pointer' }}>
-                      <input
-                        type="file"
-                        accept="image/png, image/jpeg, image/webp"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) {
-                            if (productImagePreview && productImagePreview.startsWith('blob:')) {
-                              URL.revokeObjectURL(productImagePreview);
-                            }
-                            setProductImageFile(file);
-                            setProductImagePreview(URL.createObjectURL(file));
-                          }
-                        }}
-                        style={{ display: 'none' }}
-                      />
-                      {productImagePreview ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', textAlign: 'left' }}>
-                          <img
-                            src={productImagePreview}
-                            alt="Preview"
-                            style={{ width: '56px', height: '56px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #cbd5e1' }}
-                          />
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {productImageFile?.name || 'Ảnh sản phẩm'}
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#059669', fontWeight: 600 }}>
-                              ✓ Sẽ tải lên Cloudinary khi bấm Lưu
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                              Nhấp để đổi ảnh khác
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              if (productImagePreview && productImagePreview.startsWith('blob:')) {
-                                URL.revokeObjectURL(productImagePreview);
-                              }
-                              setProductImageFile(null);
-                              setProductImagePreview(null);
-                              setProductForm({ ...productForm, image_url: '' });
-                            }}
-                            style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '4px' }}
-                            title="Bỏ chọn ảnh"
-                          >
-                            <X size={18} />
-                          </button>
-                        </div>
-                      ) : (
-                        <div>
-                          <Camera size={24} color="#64748b" style={{ margin: '0 auto 4px' }} />
-                          <div style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b' }}>
-                            Chọn ảnh hoặc chụp ảnh từ điện thoại
-                          </div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>
-                            Tự động tải lên Cloudinary khi lưu
-                          </div>
-                        </div>
-                      )}
-                    </label>
-                  </div>
-                ) : (
-                  <div>
-                    <input
-                      type="text"
-                      value={productForm.image_url}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        if (val.trim().startsWith('data:')) {
-                          addToast('Không được dán ảnh dạng Base64. Vui lòng tải file ảnh lên để lưu Cloudinary.', 'error');
-                          return;
-                        }
-                        setProductForm({ ...productForm, image_url: val });
-                        setProductImagePreview(val.trim() || null);
-                      }}
-                      placeholder="https://res.cloudinary.com/..."
-                      className="form-input"
-                    />
-                    {productForm.image_url.trim() && (
-                      <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <img
-                          src={productForm.image_url.trim()}
-                          alt="Preview"
-                          onError={() => {}}
-                          style={{ width: '42px', height: '42px', borderRadius: '6px', objectFit: 'cover', border: '1px solid #e2e8f0' }}
-                        />
-                        <span style={{ fontSize: '12px', color: '#64748b' }}>Xem trước ảnh liên kết URL</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
-                <button
-                  type="button"
-                  disabled={savingProduct}
-                  onClick={() => {
-                    if (productImagePreview && productImagePreview.startsWith('blob:')) {
-                      URL.revokeObjectURL(productImagePreview);
-                    }
-                    setIsAddOpen(false);
-                    setEditProduct(null);
-                    setProductImageFile(null);
-                    setProductImagePreview(null);
-                  }}
-                  className="btn btn-secondary"
-                >
-                  Hủy
-                </button>
-                <button type="submit" disabled={savingProduct} className="btn btn-primary">
-                  {savingProduct
-                    ? saveStep || 'Đang xử lý...'
-                    : editProduct
-                    ? 'Lưu thay đổi'
-                    : 'Thêm sản phẩm'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* 4. Settings Modal (Cloudinary) */}
-      {isSettingsOpen && (
-        <div className="modal-overlay" onClick={() => setIsSettingsOpen(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title">Cấu Hình Cloudinary</h3>
-              <button onClick={() => setIsSettingsOpen(false)} className="modal-close-btn">
-                <X size={20} />
-              </button>
-            </div>
-            <form onSubmit={handleSaveSettings}>
-              {/* Connection Status Badge */}
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '8px 12px',
-                  background: cloudinaryConfigured ? '#ecfdf5' : '#fffbeb',
-                  border: `1px solid ${cloudinaryConfigured ? '#a7f3d0' : '#fde68a'}`,
-                  borderRadius: '10px',
-                  marginBottom: '14px',
-                  fontSize: '12px',
-                  color: cloudinaryConfigured ? '#047857' : '#b45309',
-                  fontWeight: 600,
-                }}
-              >
-                {cloudinaryConfigured ? <Check size={16} color="#059669" /> : <AlertCircle size={16} color="#d97706" />}
-                <span>
-                  {cloudinaryConfigured
-                    ? `Đang kết nối: Cloud "${configuredCloudName || settingsForm.cloudinary_cloud_name}"`
-                    : 'Chưa cấu hình Cloudinary (Cần Cloud Name & API Key)'}
-                </span>
-              </div>
-
-              {/* Cloudinary URL quick helper */}
-              <div className="form-group">
-                <label className="form-label">
-                  Dán nhanh CLOUDINARY_URL (Tùy chọn)
-                </label>
-                <input
-                  type="text"
-                  value={settingsForm.cloudinary_url}
-                  onChange={(e) => handlePasteCloudinaryUrl(e.target.value)}
-                  placeholder="cloudinary://<api_key>:<api_secret>@<cloud_name>"
-                  className="form-input"
-                  style={{ fontSize: '13px' }}
-                />
-                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
-                  Nếu dán CLOUDINARY_URL, hệ thống sẽ tự động trích xuất các ô bên dưới.
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">Cloud Name (Tên Cloud)</label>
-                <input
-                  type="text"
-                  required
-                  value={settingsForm.cloudinary_cloud_name}
-                  onChange={(e) =>
-                    setSettingsForm({ ...settingsForm, cloudinary_cloud_name: e.target.value })
-                  }
-                  placeholder="Ví dụ: my-cloud-name"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">API Key</label>
-                <input
-                  type="text"
-                  required
-                  value={settingsForm.cloudinary_api_key}
-                  onChange={(e) =>
-                    setSettingsForm({ ...settingsForm, cloudinary_api_key: e.target.value })
-                  }
-                  placeholder="Ví dụ: 123456789012345"
-                  className="form-input"
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">API Secret / Token</label>
-                <input
-                  type="text"
-                  required
-                  value={settingsForm.cloudinary_token}
-                  onChange={(e) =>
-                    setSettingsForm({ ...settingsForm, cloudinary_token: e.target.value })
-                  }
-                  placeholder="WvyrN70XVe0uR1VFDJOdkzDX6iU"
-                  className="form-input"
-                />
-              </div>
-
-              {/* Test feedback */}
-              {testResult && (
-                <div
-                  style={{
-                    padding: '8px 12px',
-                    borderRadius: '8px',
-                    fontSize: '12px',
-                    marginBottom: '14px',
-                    background: testResult.success ? '#ecfdf5' : '#fef2f2',
-                    border: `1px solid ${testResult.success ? '#a7f3d0' : '#fecaca'}`,
-                    color: testResult.success ? '#047857' : '#b91c1c',
-                    fontWeight: 500,
-                  }}
-                >
-                  {testResult.message}
-                </div>
-              )}
-
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '20px' }}>
-                <button
-                  type="button"
-                  disabled={testingConnection}
-                  onClick={handleTestConnection}
-                  className="btn btn-secondary btn-sm"
-                  title="Kiểm tra kết nối đến tài khoản Cloudinary"
-                >
-                  <RefreshCw size={14} className={testingConnection ? 'animate-spin' : ''} />
-                  <span>{testingConnection ? 'Đang test...' : 'Kiểm tra kết nối'}</span>
-                </button>
-
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    type="button"
-                    onClick={() => setIsSettingsOpen(false)}
-                    className="btn btn-secondary"
-                  >
-                    Đóng
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={settingsLoading}
-                    className="btn btn-emerald"
-                  >
-                    {settingsLoading ? 'Đang lưu...' : 'Lưu cấu hình'}
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* 5. Lightbox Modal */}
-      {lightboxImage && (
-        <div className="modal-overlay" onClick={() => setLightboxImage(null)}>
-          <div
-            style={{
-              position: 'relative',
-              maxWidth: '92vw',
-              maxHeight: '90vh',
-              background: 'white',
-              borderRadius: '16px',
-              overflow: 'hidden',
-              boxShadow: 'var(--shadow-xl)',
-              animation: 'slideUp 0.2s ease-out',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{
-                position: 'absolute',
-                top: '10px',
-                right: '10px',
-                zIndex: 10,
-              }}
-            >
-              <button
-                onClick={() => setLightboxImage(null)}
-                style={{
-                  background: 'rgba(0,0,0,0.6)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '50%',
-                  width: '32px',
-                  height: '32px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  cursor: 'pointer',
-                }}
-              >
+        <div className="overlay" onClick={closeProductModal}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div className="modal-title">{editProduct ? 'Sửa sản phẩm' : 'Thêm mã PLU'}</div>
+              <button type="button" className="modal-close" onClick={closeProductModal} aria-label="Đóng">
                 <X size={18} />
               </button>
             </div>
 
-            <img
-              src={lightboxImage.url}
-              alt={lightboxImage.title}
-              style={{
-                maxWidth: '88vw',
-                maxHeight: '70vh',
-                objectFit: 'contain',
-                display: 'block',
-              }}
-            />
-
-            <div
-              style={{
-                padding: '12px 16px',
-                background: 'white',
-                borderTop: '1px solid var(--border-subtle)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '12px',
-              }}
-            >
-              <div style={{ minWidth: 0 }}>
-                <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {lightboxImage.title}
-                </h4>
-                <div style={{ fontSize: '12px', color: '#64748b' }}>
-                  Mã PLU: <strong style={{ color: '#e11d48' }}>{lightboxImage.plu}</strong>
+            <form onSubmit={handleSaveProduct}>
+              <div className="row-plu">
+                <div className="field">
+                  <label htmlFor="f-plu">Mã PLU</label>
+                  <input
+                    id="f-plu"
+                    className="input"
+                    type="text"
+                    inputMode="numeric"
+                    required
+                    value={productForm.plu}
+                    onChange={(e) => setProductForm({ ...productForm, plu: e.target.value })}
+                    placeholder="46040"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="f-name">Tên sản phẩm</label>
+                  <input
+                    id="f-name"
+                    className="input"
+                    type="text"
+                    required
+                    value={productForm.name}
+                    onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
+                    placeholder="Bơ sáp (tròn)"
+                  />
                 </div>
               </div>
-              <button
-                onClick={() => handleCopyPlu(lightboxImage.plu, lightboxImage.title)}
-                className="btn btn-secondary btn-sm"
-              >
-                <Copy size={13} />
-                <span>Sao chép mã</span>
+
+              <div className="row-2">
+                <div className="field">
+                  <label htmlFor="f-cat">Danh mục</label>
+                  <select
+                    id="f-cat"
+                    className="select"
+                    value={productForm.category}
+                    onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}
+                  >
+                    {CATEGORIES.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label htmlFor="f-unit">Đơn vị</label>
+                  <select
+                    id="f-unit"
+                    className="select"
+                    value={productForm.unit}
+                    onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
+                  >
+                    {UNITS.map((u) => (
+                      <option key={u} value={u}>
+                        {u}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="field">
+                <label htmlFor="f-note">Ghi chú</label>
+                <input
+                  id="f-note"
+                  className="input"
+                  type="text"
+                  value={productForm.note}
+                  onChange={(e) => setProductForm({ ...productForm, note: e.target.value })}
+                  placeholder="Không bắt buộc"
+                />
+              </div>
+
+              <div className="field">
+                <label>Hình ảnh</label>
+                <div className="tabs">
+                  <button
+                    type="button"
+                    className={productImageMode === 'upload' ? 'active' : ''}
+                    onClick={() => setProductImageMode('upload')}
+                  >
+                    <Camera size={14} /> Tải ảnh
+                  </button>
+                  <button
+                    type="button"
+                    className={productImageMode === 'url' ? 'active' : ''}
+                    onClick={() => setProductImageMode('url')}
+                  >
+                    <ExternalLink size={14} /> Dán link
+                  </button>
+                </div>
+
+                {productImageMode === 'upload' ? (
+                  productImagePreview && productImageFile ? (
+                    <div className="file-chip">
+                      <img src={productImagePreview} alt="Xem trước" />
+                      <div className="meta">
+                        <div className="name">{productImageFile.name}</div>
+                        <div className="sub">Sẽ tải lên Cloudinary khi lưu</div>
+                      </div>
+                      <button
+                        type="button"
+                        className="modal-close"
+                        aria-label="Bỏ ảnh"
+                        onClick={() => {
+                          if (productImagePreview.startsWith('blob:')) URL.revokeObjectURL(productImagePreview);
+                          setProductImageFile(null);
+                          setProductImagePreview(null);
+                        }}
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="dropzone" style={{ padding: 16 }}>
+                      <input
+                        type="file"
+                        accept="image/png, image/jpeg, image/webp"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            if (productImagePreview?.startsWith('blob:')) URL.revokeObjectURL(productImagePreview);
+                            setProductImageFile(file);
+                            setProductImagePreview(URL.createObjectURL(file));
+                          }
+                        }}
+                      />
+                      <Camera size={24} className="dz-icon" />
+                      <div className="dz-title">Chụp hoặc chọn ảnh</div>
+                      <div className="dz-sub">Tự tải lên Cloudinary khi lưu</div>
+                    </label>
+                  )
+                ) : (
+                  <>
+                    <input
+                      className="input"
+                      type="url"
+                      value={productForm.image_url}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val.trim().startsWith('data:')) {
+                          addToast('Không dùng ảnh Base64. Hãy tải file ảnh lên.', 'error');
+                          return;
+                        }
+                        setProductForm({ ...productForm, image_url: val });
+                      }}
+                      placeholder="https://res.cloudinary.com/..."
+                    />
+                    {productForm.image_url.trim() && (
+                      <div className="file-chip" style={{ marginTop: 8 }}>
+                        <img src={productForm.image_url.trim()} alt="Xem trước" />
+                        <div className="meta">
+                          <div className="name">Ảnh từ link</div>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div className="modal-foot">
+                {editProduct ? (
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    style={{ flex: '0 0 auto', width: 46, padding: 0 }}
+                    onClick={() => handleDeleteProduct(editProduct.id, editProduct.name)}
+                    aria-label="Xóa sản phẩm"
+                    disabled={savingProduct}
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                ) : (
+                  <button type="button" className="btn btn-ghost" onClick={closeProductModal} disabled={savingProduct}>
+                    Hủy
+                  </button>
+                )}
+                <button type="submit" className="btn btn-primary" disabled={savingProduct}>
+                  {savingProduct ? saveStep || 'Đang xử lý...' : editProduct ? 'Lưu thay đổi' : 'Thêm sản phẩm'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Settings */}
+      {isSettingsOpen && (
+        <div className="overlay" onClick={() => setIsSettingsOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-handle" />
+            <div className="modal-head">
+              <div className="modal-title">Cấu hình Cloudinary</div>
+              <button type="button" className="modal-close" onClick={() => setIsSettingsOpen(false)} aria-label="Đóng">
+                <X size={18} />
               </button>
+            </div>
+            <form onSubmit={handleSaveSettings}>
+              <div className={`status-box ${cloudinaryConfigured ? 'ok' : 'warn'}`}>
+                {cloudinaryConfigured ? <Check size={16} /> : <AlertCircle size={16} />}
+                <span>
+                  {cloudinaryConfigured
+                    ? `Đã kết nối cloud "${configuredCloudName || settingsForm.cloudinary_cloud_name}"`
+                    : 'Chưa cấu hình — cần Cloud Name và API Key'}
+                </span>
+              </div>
+
+              <div className="field">
+                <label htmlFor="s-url">CLOUDINARY_URL (dán nhanh)</label>
+                <input
+                  id="s-url"
+                  className="input"
+                  type="text"
+                  value={settingsForm.cloudinary_url}
+                  onChange={(e) => handlePasteCloudinaryUrl(e.target.value)}
+                  placeholder="cloudinary://key:secret@cloud"
+                  style={{ fontSize: 14 }}
+                />
+                <div className="hint">Dán vào đây sẽ tự điền 3 ô bên dưới.</div>
+              </div>
+              <div className="field">
+                <label htmlFor="s-cloud">Cloud Name</label>
+                <input
+                  id="s-cloud"
+                  className="input"
+                  type="text"
+                  required
+                  value={settingsForm.cloudinary_cloud_name}
+                  onChange={(e) => setSettingsForm({ ...settingsForm, cloudinary_cloud_name: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="s-key">API Key</label>
+                <input
+                  id="s-key"
+                  className="input"
+                  type="text"
+                  required
+                  value={settingsForm.cloudinary_api_key}
+                  onChange={(e) => setSettingsForm({ ...settingsForm, cloudinary_api_key: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="s-secret">API Secret</label>
+                <input
+                  id="s-secret"
+                  className="input"
+                  type="text"
+                  required
+                  value={settingsForm.cloudinary_token}
+                  onChange={(e) => setSettingsForm({ ...settingsForm, cloudinary_token: e.target.value })}
+                />
+              </div>
+
+              {testResult && (
+                <div className={`status-box ${testResult.success ? 'ok' : 'err'}`}>{testResult.message}</div>
+              )}
+
+              <div className="modal-foot">
+                <button type="button" className="btn btn-ghost" onClick={handleTestConnection} disabled={testingConnection}>
+                  <RefreshCw size={15} className={testingConnection ? 'spin' : ''} />
+                  {testingConnection ? 'Đang thử...' : 'Kiểm tra'}
+                </button>
+                <button type="submit" className="btn btn-green" disabled={settingsLoading}>
+                  {settingsLoading ? 'Đang lưu...' : 'Lưu cấu hình'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Lightbox */}
+      {lightboxImage && (
+        <div className="overlay" onClick={() => setLightboxImage(null)}>
+          <div className="lightbox" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="lb-close" onClick={() => setLightboxImage(null)} aria-label="Đóng">
+              <X size={18} />
+            </button>
+            <img src={lightboxImage.image_url} alt={lightboxImage.name} />
+            <div className="lb-foot">
+              <div style={{ minWidth: 0 }}>
+                <div className="lb-name">{lightboxImage.name}</div>
+                <div className="lb-plu">
+                  Mã PLU <strong>{lightboxImage.plu}</strong>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                {auth.authenticated && (
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Đổi ảnh"
+                    onClick={() => {
+                      const p = lightboxImage;
+                      setLightboxImage(null);
+                      setUploadProduct(p);
+                    }}
+                  >
+                    <Camera size={16} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => handleCopyPlu(lightboxImage.plu, lightboxImage.name)}
+                >
+                  <Copy size={14} /> Chép mã
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Floating Toast Notification Container */}
-      <div className="toast-container">
+      {/* Toasts */}
+      <div className="toasts" aria-live="polite">
         {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={`toast ${
-              t.type === 'success'
-                ? 'toast-success'
-                : t.type === 'error'
-                ? 'toast-error'
-                : 'toast-info'
-            }`}
-          >
+          <div key={t.id} className="toast">
             {t.type === 'success' ? (
-              <Check size={18} color="#10b981" />
+              <Check size={18} color="#34d399" />
             ) : t.type === 'error' ? (
-              <AlertCircle size={18} color="#ef4444" />
+              <AlertCircle size={18} color="#f87171" />
             ) : (
-              <Sparkles size={18} color="#3b82f6" />
+              <Sparkles size={18} color="#60a5fa" />
             )}
             <span>{t.message}</span>
           </div>
