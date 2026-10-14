@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { uploadImage } from '@/lib/cloudinary';
+import { uploadImage, deleteCloudinaryImage, getCloudinaryConfig } from '@/lib/cloudinary';
 import { getTursoClient } from '@/lib/turso';
 import { getSession } from '@/lib/auth';
 
@@ -10,6 +10,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { success: false, message: 'Bạn cần đăng nhập quản trị viên để tải ảnh lên' },
         { status: 401 }
+      );
+    }
+
+    // Verify Cloudinary configuration first
+    const config = await getCloudinaryConfig();
+    if (!config) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Cloudinary chưa được cấu hình. Vui lòng vào Cài đặt (nút bánh răng) để nhập Cloud Name, API Key và API Secret trước khi tải ảnh.',
+        },
+        { status: 400 }
       );
     }
 
@@ -31,10 +43,10 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Limit to 8MB
-    if (file.size > 8 * 1024 * 1024) {
+    // Limit to 10MB
+    if (file.size > 10 * 1024 * 1024) {
       return NextResponse.json(
-        { success: false, message: 'Kích thước ảnh tối đa là 8MB' },
+        { success: false, message: 'Kích thước ảnh tối đa là 10MB' },
         { status: 400 }
       );
     }
@@ -44,9 +56,24 @@ export async function POST(req: NextRequest) {
 
     const uploadRes = await uploadImage(buffer, file.type, file.name);
 
-    // If productId was provided, update product in Turso
+    // If productId was provided, update product in Turso and delete old Cloudinary image if existing
     if (productId && productId !== 'undefined' && productId !== 'null' && productId.trim() !== '') {
       const client = getTursoClient();
+      
+      // Check if there was an old image public id
+      try {
+        const oldRow = await client.execute({
+          sql: 'SELECT image_public_id FROM products WHERE id = ?',
+          args: [Number(productId)],
+        });
+        const oldPublicId = oldRow.rows[0]?.image_public_id ? String(oldRow.rows[0].image_public_id) : '';
+        if (oldPublicId && oldPublicId !== uploadRes.publicId) {
+          deleteCloudinaryImage(oldPublicId).catch(() => {});
+        }
+      } catch {
+        // Ignore old image fetch error
+      }
+
       await client.execute({
         sql: `UPDATE products 
               SET image_url = ?, 
@@ -61,15 +88,59 @@ export async function POST(req: NextRequest) {
       success: true,
       url: uploadRes.url,
       publicId: uploadRes.publicId,
-      provider: uploadRes.provider,
-      message: uploadRes.provider === 'cloudinary'
-        ? 'Tải ảnh lên Cloudinary thành công!'
-        : 'Tải ảnh thành công và đã lưu vào cơ sở dữ liệu!',
+      provider: 'cloudinary',
+      message: 'Tải ảnh lên Cloudinary thành công!',
     });
   } catch (error: any) {
     console.error('Upload error:', error);
     return NextResponse.json(
-      { success: false, message: error?.message || 'Lỗi khi tải ảnh lên' },
+      {
+        success: false,
+        message: error?.message || 'Lỗi khi tải ảnh lên Cloudinary. Vui lòng thử lại.',
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(req: NextRequest) {
+  try {
+    const session = await getSession();
+    if (!session) {
+      return NextResponse.json(
+        { success: false, message: 'Yêu cầu quyền quản trị viên' },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } = new URL(req.url);
+    const productId = searchParams.get('productId');
+    const publicId = searchParams.get('publicId');
+
+    if (publicId) {
+      await deleteCloudinaryImage(publicId);
+    }
+
+    if (productId) {
+      const client = getTursoClient();
+      await client.execute({
+        sql: `UPDATE products 
+              SET image_url = '', 
+                  image_public_id = '', 
+                  updated_at = datetime('now', '+7 hours') 
+              WHERE id = ?`,
+        args: [Number(productId)],
+      });
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Đã xóa ảnh thành công',
+    });
+  } catch (error: any) {
+    console.error('Delete image error:', error);
+    return NextResponse.json(
+      { success: false, message: error?.message || 'Lỗi khi xóa ảnh' },
       { status: 500 }
     );
   }

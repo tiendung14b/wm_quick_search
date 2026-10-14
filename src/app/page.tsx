@@ -13,6 +13,7 @@ import {
   Settings,
   X,
   LayoutGrid,
+  List,
   Table as TableIcon,
   Printer,
   Edit2,
@@ -23,6 +24,9 @@ import {
   Sparkles,
   Camera,
   ExternalLink,
+  ArrowUp,
+  CloudCheck,
+  ShieldAlert,
 } from 'lucide-react';
 
 interface Product {
@@ -66,8 +70,9 @@ export default function HomePage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
+  const [viewMode, setViewMode] = useState<'grid' | 'list' | 'table'>('grid');
   const [sortBy, setSortBy] = useState<'plu_asc' | 'name_asc'>('plu_asc');
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   // Auth State
   const [auth, setAuth] = useState<AuthState>({
@@ -108,13 +113,19 @@ export default function HomePage() {
   const [savingProduct, setSavingProduct] = useState(false);
   const [saveStep, setSaveStep] = useState('');
 
+  // Settings Modal State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsForm, setSettingsForm] = useState({
     cloudinary_cloud_name: '',
     cloudinary_api_key: '',
     cloudinary_token: 'WvyrN70XVe0uR1VFDJOdkzDX6iU',
+    cloudinary_url: '',
   });
+  const [cloudinaryConfigured, setCloudinaryConfigured] = useState(false);
+  const [configuredCloudName, setConfiguredCloudName] = useState<string | null>(null);
   const [settingsLoading, setSettingsLoading] = useState(false);
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const [lightboxImage, setLightboxImage] = useState<{ url: string; title: string; plu: string } | null>(null);
 
@@ -128,6 +139,15 @@ export default function HomePage() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 3500);
   };
+
+  // Scroll listener for Floating Scroll to Top button
+  useEffect(() => {
+    const handleScroll = () => {
+      setShowScrollTop(window.scrollY > 250);
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
 
   // Keyboard shortcut for search
   useEffect(() => {
@@ -196,7 +216,10 @@ export default function HomePage() {
           cloudinary_cloud_name: data.settings.cloudinary_cloud_name || '',
           cloudinary_api_key: data.settings.cloudinary_api_key || '',
           cloudinary_token: data.settings.cloudinary_token || 'WvyrN70XVe0uR1VFDJOdkzDX6iU',
+          cloudinary_url: data.settings.cloudinary_url || '',
         });
+        setCloudinaryConfigured(data.isConfigured || false);
+        setConfiguredCloudName(data.configuredCloudName || null);
       }
     } catch {
       // Ignored
@@ -250,14 +273,47 @@ export default function HomePage() {
     }
   };
 
-  // Copy PLU
-  const handleCopyPlu = (plu: string) => {
+  // Copy PLU with visual and toast feedback
+  const handleCopyPlu = (plu: string, name?: string) => {
     navigator.clipboard.writeText(plu);
     setCopiedPlu(plu);
-    addToast(`Đã sao chép mã PLU: ${plu}`, 'success');
+    addToast(`Đã sao chép PLU: ${plu}${name ? ` (${name})` : ''}`, 'success');
     setTimeout(() => {
       setCopiedPlu(null);
-    }, 1500);
+    }, 1800);
+  };
+
+  // Test Cloudinary connection
+  const handleTestConnection = async () => {
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'test',
+          ...settingsForm,
+        }),
+      });
+      const data = await res.json();
+      setTestResult({
+        success: data.success,
+        message: data.message,
+      });
+      if (data.success) {
+        addToast(data.message, 'success');
+      } else {
+        addToast(data.message, 'error');
+      }
+    } catch {
+      setTestResult({
+        success: false,
+        message: 'Lỗi kết nối kiểm tra Cloudinary',
+      });
+    } finally {
+      setTestingConnection(false);
+    }
   };
 
   // Save Settings
@@ -272,7 +328,9 @@ export default function HomePage() {
       });
       const data = await res.json();
       if (data.success) {
-        addToast('Đã lưu cấu hình Cloudinary thành công!', 'success');
+        addToast(data.message || 'Đã lưu cấu hình Cloudinary thành công!', 'success');
+        setCloudinaryConfigured(data.isVerified);
+        setConfiguredCloudName(data.cloudName);
         setIsSettingsOpen(false);
       } else {
         addToast(data.message || 'Lỗi khi lưu cấu hình', 'error');
@@ -284,20 +342,45 @@ export default function HomePage() {
     }
   };
 
-  // Handle image file selection
+  // Parse CLOUDINARY_URL helper for user convenience
+  const handlePasteCloudinaryUrl = (url: string) => {
+    const trimmed = url.trim();
+    if (trimmed.startsWith('cloudinary://')) {
+      try {
+        const clean = trimmed.replace('cloudinary://', '');
+        const [authPart, cloudName] = clean.split('@');
+        if (authPart && cloudName) {
+          const [apiKey, apiSecret] = authPart.split(':');
+          setSettingsForm({
+            ...settingsForm,
+            cloudinary_cloud_name: cloudName.trim(),
+            cloudinary_api_key: apiKey?.trim() || '',
+            cloudinary_token: apiSecret?.trim() || '',
+            cloudinary_url: trimmed,
+          });
+          addToast('Đã tự động trích xuất thông tin từ URL Cloudinary!', 'info');
+          return;
+        }
+      } catch {
+        // Ignore parse error
+      }
+    }
+    setSettingsForm({ ...settingsForm, cloudinary_url: url });
+  };
+
+  // Handle single image file selection (Upload modal) - Using ObjectURL (never Base64)
   const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      if (uploadPreview && uploadPreview.startsWith('blob:')) {
+        URL.revokeObjectURL(uploadPreview);
+      }
       setUploadFile(file);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setUploadPreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      setUploadPreview(URL.createObjectURL(file));
     }
   };
 
-  // Upload image
+  // Upload image for a product
   const handleUploadImage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadProduct || !uploadFile) {
@@ -318,16 +401,19 @@ export default function HomePage() {
 
       const data = await res.json();
       if (data.success) {
-        addToast(data.message || 'Tải ảnh thành công!', 'success');
+        addToast(data.message || 'Tải ảnh lên Cloudinary thành công!', 'success');
         // Update product in local state
         setProducts((prev) =>
-          prev.map((p) => (p.id === uploadProduct.id ? { ...p, image_url: data.url } : p))
+          prev.map((p) => (p.id === uploadProduct.id ? { ...p, image_url: data.url, image_public_id: data.publicId } : p))
         );
+        if (uploadPreview && uploadPreview.startsWith('blob:')) {
+          URL.revokeObjectURL(uploadPreview);
+        }
         setUploadProduct(null);
         setUploadFile(null);
         setUploadPreview(null);
       } else {
-        addToast(data.message || 'Lỗi tải ảnh', 'error');
+        addToast(data.message || 'Lỗi tải ảnh lên Cloudinary', 'error');
       }
     } catch {
       addToast('Lỗi kết nối khi tải ảnh', 'error');
@@ -339,13 +425,20 @@ export default function HomePage() {
   // Save new or edited product
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    let finalImageUrl = productForm.image_url.trim();
+
+    // Check: STRICTLY DISALLOW Base64 in image_url
+    if (finalImageUrl.startsWith('data:')) {
+      addToast('Không được phép lưu ảnh Base64. Vui lòng tải file ảnh lên Cloudinary hoặc dùng link ảnh ngoài.', 'error');
+      return;
+    }
+
     setSavingProduct(true);
     try {
-      let finalImageUrl = productForm.image_url.trim();
-
-      // Only upload to cloud when user submits!
+      // If user uploaded a new image file, upload to Cloudinary first
       if (productImageFile) {
-        setSaveStep('Đang tải ảnh lên Cloud...');
+        setSaveStep('Đang tải ảnh lên Cloudinary...');
         const formData = new FormData();
         formData.append('file', productImageFile);
         if (editProduct) {
@@ -359,7 +452,7 @@ export default function HomePage() {
 
         const uploadData = await uploadRes.json();
         if (!uploadData.success) {
-          addToast(uploadData.message || 'Lỗi khi tải ảnh lên Cloud', 'error');
+          addToast(uploadData.message || 'Lỗi khi tải ảnh lên Cloudinary', 'error');
           setSavingProduct(false);
           setSaveStep('');
           return;
@@ -387,6 +480,9 @@ export default function HomePage() {
           setProducts((prev) =>
             prev.map((p) => (p.id === editProduct.id ? { ...p, ...payload } : p))
           );
+          if (productImagePreview && productImagePreview.startsWith('blob:')) {
+            URL.revokeObjectURL(productImagePreview);
+          }
           setEditProduct(null);
           setProductImageFile(null);
           setProductImagePreview(null);
@@ -403,6 +499,9 @@ export default function HomePage() {
         const data = await res.json();
         if (data.success) {
           addToast('Thêm sản phẩm thành công', 'success');
+          if (productImagePreview && productImagePreview.startsWith('blob:')) {
+            URL.revokeObjectURL(productImagePreview);
+          }
           setIsAddOpen(false);
           setProductImageFile(null);
           setProductImagePreview(null);
@@ -492,6 +591,10 @@ export default function HomePage() {
     }
   };
 
+  const scrollToTop = () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {/* App Header */}
@@ -500,51 +603,50 @@ export default function HomePage() {
           <div className="brand-section">
             <div className="brand-logo">WM</div>
             <div>
-              <div className="brand-title">WinMart PLU Search</div>
-              <div className="brand-subtitle">Hệ Thống Tra Cứu Mã Cân Nhanh &middot; Dữ Liệu Turso SQL</div>
+              <div className="brand-title">WinMart PLU</div>
+              <div className="brand-subtitle">Tra cứu mã cân &middot; Turso LibSQL &middot; Cloudinary</div>
             </div>
           </div>
 
           <div className="header-actions">
-            {/* Print button */}
+            {/* Print button (desktop only) */}
             <button
               onClick={() => window.print()}
-              className="btn btn-secondary btn-sm"
+              className="btn btn-secondary btn-sm hide-on-mobile"
               title="In bảng tra cứu mã PLU"
             >
               <Printer size={15} />
-              <span className="hide-on-mobile">In bảng mã</span>
+              <span>In mã</span>
             </button>
 
             {/* Admin status / Login */}
             {auth.authenticated ? (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <div
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 12px',
+                    gap: '5px',
+                    padding: '5px 8px',
                     background: '#ecfdf5',
                     borderRadius: '8px',
                     border: '1px solid #a7f3d0',
-                    fontSize: '12px',
-                    fontWeight: 600,
+                    fontSize: '11px',
+                    fontWeight: 700,
                     color: '#065f46',
                   }}
-                  title="Phiên đăng nhập tự động kết thúc lúc 23:59 hôm nay"
+                  title="Phiên đăng nhập quản trị"
                 >
                   <span
                     style={{
-                      width: '8px',
-                      height: '8px',
+                      width: '7px',
+                      height: '7px',
                       borderRadius: '50%',
                       background: '#10b981',
                       display: 'inline-block',
                     }}
                   />
-                  <span>wm_admin</span>
-                  <span style={{ color: '#047857', opacity: 0.8 }}>(Phiên đến 23:59)</span>
+                  <span>Admin</span>
                 </div>
 
                 <button
@@ -552,7 +654,7 @@ export default function HomePage() {
                   className="btn btn-secondary btn-sm btn-icon"
                   title="Cấu hình Cloudinary"
                 >
-                  <Settings size={16} />
+                  <Settings size={15} />
                 </button>
 
                 <button
@@ -571,9 +673,10 @@ export default function HomePage() {
                     setIsAddOpen(true);
                   }}
                   className="btn btn-emerald btn-sm"
+                  title="Thêm sản phẩm mới"
                 >
                   <Plus size={15} />
-                  <span>Thêm mã</span>
+                  <span className="hide-on-mobile">Thêm mã</span>
                 </button>
 
                 <button
@@ -581,7 +684,7 @@ export default function HomePage() {
                   className="btn btn-secondary btn-sm btn-icon"
                   title="Đăng xuất"
                 >
-                  <LogOut size={16} />
+                  <LogOut size={15} />
                 </button>
               </div>
             ) : (
@@ -589,8 +692,8 @@ export default function HomePage() {
                 onClick={() => setIsLoginOpen(true)}
                 className="btn btn-primary btn-sm"
               >
-                <LogIn size={15} />
-                <span>Đăng nhập Admin</span>
+                <LogIn size={14} />
+                <span>Đăng nhập</span>
               </button>
             )}
           </div>
@@ -599,16 +702,16 @@ export default function HomePage() {
 
       {/* Main Content Area */}
       <main className="container" style={{ flex: 1 }}>
-        {/* Search Hero Section */}
+        {/* Search Hero Section (Sticky on mobile for instant reach) */}
         <div className="search-hero">
           <div className="search-input-wrapper">
-            <Search className="search-icon-left" size={24} />
+            <Search className="search-icon-left" size={20} />
             <input
               ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Nhập mã PLU (VD: 46040, 46543) hoặc Tên sản phẩm (VD: Táo, Bơ, Cá, Rau)..."
+              placeholder="Tìm mã PLU hoặc tên (VD: 46040, bơ, táo)..."
               className="search-input"
               autoFocus
             />
@@ -617,16 +720,21 @@ export default function HomePage() {
                 <button
                   onClick={() => setSearchQuery('')}
                   style={{
-                    background: 'none',
+                    background: '#f1f5f9',
                     border: 'none',
+                    borderRadius: '50%',
                     cursor: 'pointer',
-                    color: '#94a3b8',
-                    padding: '4px',
+                    color: '#64748b',
+                    width: '28px',
+                    height: '28px',
                     display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
                   }}
                   title="Xóa tìm kiếm (ESC)"
+                  aria-label="Xóa tìm kiếm"
                 >
-                  <X size={18} />
+                  <X size={15} />
                 </button>
               ) : (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -637,7 +745,7 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Category Filter Pills */}
+          {/* Category Filter Pills (Horizontal touch-friendly scroll) */}
           <div className="category-pills">
             <button
               onClick={() => setSelectedCategory('all')}
@@ -675,10 +783,10 @@ export default function HomePage() {
           <div className="result-count-text">
             Tìm thấy <strong>{sortedProducts.length}</strong> sản phẩm
             {selectedCategory !== 'all' && (
-              <span> trong danh mục <em>{selectedCategory}</em></span>
+              <span className="hide-on-mobile"> trong <em>{selectedCategory}</em></span>
             )}
             {searchQuery && (
-              <span> với từ khóa &ldquo;{searchQuery}&rdquo;</span>
+              <span> với &ldquo;{searchQuery}&rdquo;</span>
             )}
           </div>
 
@@ -688,13 +796,13 @@ export default function HomePage() {
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
               className="form-select"
-              style={{ padding: '6px 12px', fontSize: '13px', width: 'auto' }}
+              style={{ padding: '6px 10px', fontSize: '12px', width: 'auto' }}
             >
-              <option value="plu_asc">Sắp xếp: Mã PLU tăng dần</option>
-              <option value="name_asc">Sắp xếp: Tên A &rarr; Z</option>
+              <option value="plu_asc">PLU tăng dần</option>
+              <option value="name_asc">Tên A &rarr; Z</option>
             </select>
 
-            {/* View toggle */}
+            {/* View toggle (Grid / List / Table) */}
             <div style={{ display: 'flex', background: '#f1f5f9', padding: '2px', borderRadius: '8px' }}>
               <button
                 onClick={() => setViewMode('grid')}
@@ -704,21 +812,33 @@ export default function HomePage() {
                   border: 'none',
                   boxShadow: viewMode === 'grid' ? 'var(--shadow-sm)' : 'none',
                 }}
-                title="Xem dạng thẻ lưới"
+                title="Dạng lưới"
               >
-                <LayoutGrid size={16} />
+                <LayoutGrid size={15} />
+              </button>
+              <button
+                onClick={() => setViewMode('list')}
+                className={`btn btn-sm btn-icon ${viewMode === 'list' ? 'btn-secondary' : ''}`}
+                style={{
+                  background: viewMode === 'list' ? 'white' : 'transparent',
+                  border: 'none',
+                  boxShadow: viewMode === 'list' ? 'var(--shadow-sm)' : 'none',
+                }}
+                title="Dạng danh sách gọn"
+              >
+                <List size={15} />
               </button>
               <button
                 onClick={() => setViewMode('table')}
-                className={`btn btn-sm btn-icon ${viewMode === 'table' ? 'btn-secondary' : ''}`}
+                className={`btn btn-sm btn-icon hide-on-mobile ${viewMode === 'table' ? 'btn-secondary' : ''}`}
                 style={{
                   background: viewMode === 'table' ? 'white' : 'transparent',
                   border: 'none',
                   boxShadow: viewMode === 'table' ? 'var(--shadow-sm)' : 'none',
                 }}
-                title="Xem dạng danh sách bảng"
+                title="Dạng bảng chi tiết"
               >
-                <TableIcon size={16} />
+                <TableIcon size={15} />
               </button>
             </div>
           </div>
@@ -728,13 +848,13 @@ export default function HomePage() {
         {loading ? (
           /* Skeleton Loading */
           <div className="product-grid">
-            {Array.from({ length: 8 }).map((_, idx) => (
-              <div key={idx} className="product-card" style={{ height: '320px' }}>
-                <div className="skeleton" style={{ width: '100%', height: '170px' }} />
-                <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  <div className="skeleton" style={{ width: '50%', height: '18px' }} />
-                  <div className="skeleton" style={{ width: '85%', height: '22px' }} />
-                  <div className="skeleton" style={{ width: '100%', height: '48px', marginTop: '12px' }} />
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <div key={idx} className="product-card" style={{ height: '240px' }}>
+                <div className="skeleton" style={{ width: '100%', height: '120px' }} />
+                <div style={{ padding: '10px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div className="skeleton" style={{ width: '45%', height: '14px' }} />
+                  <div className="skeleton" style={{ width: '80%', height: '18px' }} />
+                  <div className="skeleton" style={{ width: '100%', height: '36px', marginTop: '6px' }} />
                 </div>
               </div>
             ))}
@@ -743,34 +863,34 @@ export default function HomePage() {
           /* Empty State */
           <div
             style={{
-              padding: '60px 20px',
+              padding: '50px 16px',
               textAlign: 'center',
               background: 'white',
               borderRadius: '16px',
               border: '1px solid var(--border-subtle)',
-              margin: '20px 0 60px',
+              margin: '16px 0 40px',
             }}
           >
             <div
               style={{
-                width: '64px',
-                height: '64px',
+                width: '56px',
+                height: '56px',
                 background: '#fef2f2',
                 color: '#ef4444',
                 borderRadius: '50%',
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                marginBottom: '16px',
+                marginBottom: '12px',
               }}
             >
-              <AlertCircle size={32} />
+              <AlertCircle size={28} />
             </div>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '6px' }}>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, marginBottom: '6px' }}>
               Không tìm thấy sản phẩm phù hợp
             </h3>
-            <p style={{ color: '#64748b', fontSize: '14px', maxWidth: '420px', margin: '0 auto 16px' }}>
-              Không có mã PLU hoặc tên sản phẩm nào khớp với &ldquo;{searchQuery}&rdquo;. Vui lòng thử lại với tên không dấu hoặc kiểm tra danh mục.
+            <p style={{ color: '#64748b', fontSize: '13px', maxWidth: '380px', margin: '0 auto 16px' }}>
+              Không có mã PLU hoặc tên sản phẩm nào khớp với &ldquo;{searchQuery}&rdquo;.
             </p>
             <button
               onClick={() => {
@@ -783,7 +903,7 @@ export default function HomePage() {
             </button>
           </div>
         ) : viewMode === 'grid' ? (
-          /* Grid View */
+          /* Grid View (2-Column on Mobile, 4+ on Desktop) */
           <div className="product-grid">
             {sortedProducts.map((p) => {
               const theme = getCategoryTheme(p.category);
@@ -801,7 +921,7 @@ export default function HomePage() {
                           setUploadProduct(p);
                         } else {
                           setIsLoginOpen(true);
-                          addToast('Vui lòng đăng nhập để tải ảnh sản phẩm', 'info');
+                          addToast('Vui lòng đăng nhập quản trị để tải ảnh sản phẩm', 'info');
                         }
                       }
                     }}
@@ -815,7 +935,7 @@ export default function HomePage() {
                       />
                     ) : (
                       <div className="card-image-empty">
-                        <ImageIcon size={32} />
+                        <ImageIcon size={26} />
                         <span>Chưa có ảnh</span>
                       </div>
                     )}
@@ -834,8 +954,8 @@ export default function HomePage() {
                       className="card-upload-overlay"
                       title="Tải ảnh lên cho sản phẩm này"
                     >
-                      <Camera size={14} />
-                      <span>{p.image_url ? 'Đổi ảnh' : 'Up ảnh'}</span>
+                      <Camera size={13} />
+                      <span>{p.image_url ? 'Đổi' : 'Up'}</span>
                     </button>
                   </div>
 
@@ -860,26 +980,32 @@ export default function HomePage() {
                     </h4>
 
                     {p.note && (
-                      <div>
-                        <span className="product-note-text">
-                          &bull; {p.note}
-                        </span>
+                      <div className="product-note-text" title={p.note}>
+                        &bull; {p.note}
                       </div>
                     )}
 
                     {/* Prominent PLU Box with 1-click copy */}
-                    <div className="plu-box">
+                    <div
+                      className="plu-box"
+                      onClick={() => handleCopyPlu(p.plu, p.name)}
+                      title="Chạm để sao chép mã PLU"
+                    >
                       <div>
                         <div className="plu-label">MÃ CÂN PLU</div>
                         <div className="plu-code">{p.plu}</div>
                       </div>
                       <button
-                        onClick={() => handleCopyPlu(p.plu)}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCopyPlu(p.plu, p.name);
+                        }}
                         className={`plu-copy-btn ${isCopied ? 'copied' : ''}`}
                         title="Sao chép mã PLU"
                       >
-                        {isCopied ? <Check size={14} /> : <Copy size={14} />}
-                        <span>{isCopied ? 'Đã chép' : 'Sao chép'}</span>
+                        {isCopied ? <Check size={13} /> : <Copy size={13} />}
+                        <span>{isCopied ? 'Đã chép' : 'Chép'}</span>
                       </button>
                     </div>
 
@@ -902,22 +1028,135 @@ export default function HomePage() {
                             setProductImageMode(p.image_url ? 'url' : 'upload');
                           }}
                           className="btn btn-secondary btn-sm"
-                          style={{ padding: '4px 8px', fontSize: '12px' }}
+                          style={{ padding: '3px 7px', fontSize: '11px' }}
                           title="Sửa thông tin"
                         >
-                          <Edit2 size={13} />
+                          <Edit2 size={12} />
                           <span>Sửa</span>
                         </button>
                         <button
                           onClick={() => handleDeleteProduct(p.id, p.name)}
                           className="btn btn-secondary btn-sm"
-                          style={{ padding: '4px 8px', fontSize: '12px', color: '#e11d48' }}
+                          style={{ padding: '3px 7px', fontSize: '11px', color: '#e11d48' }}
                           title="Xóa mã này"
                         >
-                          <Trash2 size={13} />
+                          <Trash2 size={12} />
                           <span>Xóa</span>
                         </button>
                       </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : viewMode === 'list' ? (
+          /* Dense Mobile List View (Super fast for cashiers) */
+          <div className="product-list-view">
+            {sortedProducts.map((p) => {
+              const theme = getCategoryTheme(p.category);
+              const isCopied = copiedPlu === p.plu;
+              return (
+                <div
+                  key={p.id}
+                  className="list-row-card"
+                  onClick={() => handleCopyPlu(p.plu, p.name)}
+                >
+                  {/* Thumbnail */}
+                  <div
+                    className="list-thumbnail"
+                    onClick={(e) => {
+                      if (p.image_url) {
+                        e.stopPropagation();
+                        setLightboxImage({ url: p.image_url, title: p.name, plu: p.plu });
+                      } else if (auth.authenticated) {
+                        e.stopPropagation();
+                        setUploadProduct(p);
+                      }
+                    }}
+                  >
+                    {p.image_url ? (
+                      <img src={p.image_url} alt={p.name} loading="lazy" />
+                    ) : (
+                      <ImageIcon size={18} color="#94a3b8" />
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="list-info">
+                    <div className="list-title" title={p.name}>
+                      {p.name}
+                    </div>
+                    <div className="list-meta">
+                      <span
+                        className="category-tag"
+                        style={{
+                          background: theme.bg,
+                          color: theme.color,
+                          border: `1px solid ${theme.border}`,
+                          fontSize: '10px',
+                          padding: '1px 5px',
+                        }}
+                      >
+                        {p.category}
+                      </span>
+                      <span className="unit-tag" style={{ fontSize: '10px' }}>{p.unit}</span>
+                      {p.note && (
+                        <span className="product-note-text" style={{ fontSize: '10px' }}>
+                          {p.note}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* PLU Badge & Action */}
+                  <div className="list-plu-section">
+                    <div
+                      className="list-plu-badge"
+                      style={{
+                        background: isCopied ? '#ecfdf5' : '#fff1f2',
+                        borderColor: isCopied ? '#a7f3d0' : '#fecdd3',
+                        color: isCopied ? '#059669' : '#e11d48',
+                      }}
+                      title="Nhấn để sao chép mã"
+                    >
+                      {p.plu}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopyPlu(p.plu, p.name);
+                      }}
+                      className={`plu-copy-btn ${isCopied ? 'copied' : ''}`}
+                    >
+                      {isCopied ? <Check size={14} /> : <Copy size={14} />}
+                    </button>
+
+                    {auth.authenticated && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditProduct(p);
+                          setProductForm({
+                            plu: p.plu,
+                            name: p.name,
+                            category: p.category,
+                            unit: p.unit,
+                            note: p.note,
+                            image_url: p.image_url,
+                          });
+                          setProductImageFile(null);
+                          setProductImagePreview(p.image_url || null);
+                          setProductImageMode(p.image_url ? 'url' : 'upload');
+                        }}
+                        className="btn btn-secondary btn-sm btn-icon"
+                        title="Sửa"
+                      >
+                        <Edit2 size={13} />
+                      </button>
                     )}
                   </div>
                 </div>
@@ -930,13 +1169,13 @@ export default function HomePage() {
             <table className="quick-table">
               <thead>
                 <tr>
-                  <th style={{ width: '80px' }}>Ảnh</th>
-                  <th style={{ width: '130px' }}>Mã PLU</th>
+                  <th style={{ width: '60px' }}>Ảnh</th>
+                  <th style={{ width: '110px' }}>Mã PLU</th>
                   <th>Tên sản phẩm</th>
                   <th>Danh mục</th>
-                  <th style={{ width: '80px' }}>ĐVT</th>
+                  <th style={{ width: '70px' }}>ĐVT</th>
                   <th>Ghi chú</th>
-                  <th style={{ textAlign: 'right', width: '140px' }}>Thao tác</th>
+                  <th style={{ textAlign: 'right', width: '130px' }}>Thao tác</th>
                 </tr>
               </thead>
               <tbody>
@@ -948,8 +1187,8 @@ export default function HomePage() {
                       <td>
                         <div
                           style={{
-                            width: '44px',
-                            height: '44px',
+                            width: '40px',
+                            height: '40px',
                             borderRadius: '8px',
                             background: '#f1f5f9',
                             overflow: 'hidden',
@@ -975,16 +1214,16 @@ export default function HomePage() {
                               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                             />
                           ) : (
-                            <ImageIcon size={18} color="#94a3b8" />
+                            <ImageIcon size={16} color="#94a3b8" />
                           )}
                         </div>
                       </td>
                       <td>
                         <span
                           style={{
-                            fontSize: '18px',
+                            fontSize: '17px',
                             fontWeight: 800,
-                            color: '#0f172a',
+                            color: '#e11d48',
                             letterSpacing: '0.5px',
                             fontVariantNumeric: 'tabular-nums',
                           }}
@@ -1020,11 +1259,11 @@ export default function HomePage() {
                       <td style={{ textAlign: 'right' }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px' }}>
                           <button
-                            onClick={() => handleCopyPlu(p.plu)}
+                            onClick={() => handleCopyPlu(p.plu, p.name)}
                             className={`plu-copy-btn ${isCopied ? 'copied' : ''}`}
                             title="Sao chép PLU"
                           >
-                            {isCopied ? <Check size={14} /> : <Copy size={14} />}
+                            {isCopied ? <Check size={13} /> : <Copy size={13} />}
                             <span className="hide-on-mobile">{isCopied ? 'Đã chép' : 'Chép'}</span>
                           </button>
 
@@ -1040,7 +1279,7 @@ export default function HomePage() {
                             className="btn btn-secondary btn-sm btn-icon"
                             title="Tải ảnh lên"
                           >
-                            <Camera size={14} />
+                            <Camera size={13} />
                           </button>
 
                           {auth.authenticated && (
@@ -1063,7 +1302,7 @@ export default function HomePage() {
                                 className="btn btn-secondary btn-sm btn-icon"
                                 title="Sửa"
                               >
-                                <Edit2 size={14} />
+                                <Edit2 size={13} />
                               </button>
                               <button
                                 onClick={() => handleDeleteProduct(p.id, p.name)}
@@ -1071,7 +1310,7 @@ export default function HomePage() {
                                 style={{ color: '#e11d48' }}
                                 title="Xóa"
                               >
-                                <Trash2 size={14} />
+                                <Trash2 size={13} />
                               </button>
                             </>
                           )}
@@ -1085,6 +1324,18 @@ export default function HomePage() {
           </div>
         )}
       </main>
+
+      {/* Floating Scroll-to-Top Button */}
+      {showScrollTop && (
+        <button
+          onClick={scrollToTop}
+          className="fab-top-btn"
+          title="Lên đầu trang"
+          aria-label="Lên đầu trang"
+        >
+          <ArrowUp size={20} />
+        </button>
+      )}
 
       {/* Hidden Print Table for clean paper printing */}
       <div className="print-table" style={{ display: 'none' }}>
@@ -1118,19 +1369,19 @@ export default function HomePage() {
         style={{
           background: 'white',
           borderTop: '1px solid var(--border-subtle)',
-          padding: '20px 0',
+          padding: '16px 0',
           marginTop: 'auto',
-          fontSize: '13px',
+          fontSize: '12px',
           color: '#64748b',
           textAlign: 'center',
         }}
       >
         <div className="container">
           <p>
-            WinMart PLU Quick Search &bull; Cơ sở dữ liệu đám mây Turso LibSQL &bull; Tích hợp hình ảnh Cloudinary
+            WinMart PLU Quick Search &bull; Turso LibSQL Cloud &bull; Cloudinary Image Storage
           </p>
-          <p style={{ marginTop: '4px', fontSize: '12px', color: '#94a3b8' }}>
-            Hỗ trợ hiển thị tối ưu trên thiết bị di động, máy tính bảng và màn hình thu ngân POS
+          <p style={{ marginTop: '4px', fontSize: '11px', color: '#94a3b8' }}>
+            Thiết kế tối ưu cho điện thoại di động & màn hình thu ngân POS
           </p>
         </div>
       </footer>
@@ -1153,18 +1404,18 @@ export default function HomePage() {
                   background: '#f8fafc',
                   border: '1px solid var(--border-subtle)',
                   borderRadius: '10px',
-                  padding: '12px',
-                  marginBottom: '16px',
-                  fontSize: '13px',
+                  padding: '10px 12px',
+                  marginBottom: '14px',
+                  fontSize: '12px',
                   color: '#475569',
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, color: '#0f172a' }}>
-                  <Clock size={16} color="#059669" />
-                  <span>Chính sách phiên đăng nhập trong ngày:</span>
+                  <Clock size={15} color="#059669" />
+                  <span>Phiên đăng nhập:</span>
                 </div>
-                <p style={{ marginTop: '4px' }}>
-                  Sau khi đăng nhập thành công, phiên làm việc duy trì liên tục trong ngày và tự động kết thúc lúc 23:59:59.
+                <p style={{ marginTop: '2px' }}>
+                  Phiên đăng nhập duy trì liên tục và tự động kết thúc lúc 23:59:59 của ngày hôm nay.
                 </p>
               </div>
 
@@ -1192,7 +1443,7 @@ export default function HomePage() {
                 />
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
                 <button
                   type="button"
                   onClick={() => setIsLoginOpen(false)}
@@ -1219,9 +1470,9 @@ export default function HomePage() {
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h3 className="modal-title">Tải Ảnh Sản Phẩm</h3>
+                <h3 className="modal-title">Tải Ảnh Lên Cloudinary</h3>
                 <div style={{ fontSize: '13px', color: '#64748b' }}>
-                  {uploadProduct.name} &bull; Mã PLU: <strong>{uploadProduct.plu}</strong>
+                  {uploadProduct.name} &bull; Mã PLU: <strong style={{ color: '#e11d48' }}>{uploadProduct.plu}</strong>
                 </div>
               </div>
               <button
@@ -1233,8 +1484,8 @@ export default function HomePage() {
             </div>
 
             <form onSubmit={handleUploadImage}>
-              {/* Dropzone */}
-              <label className="dropzone" style={{ display: 'block', marginBottom: '16px' }}>
+              {/* Dropzone with photo/camera support */}
+              <label className="dropzone" style={{ display: 'block', marginBottom: '14px' }}>
                 <input
                   type="file"
                   accept="image/png, image/jpeg, image/webp"
@@ -1247,26 +1498,26 @@ export default function HomePage() {
                       src={uploadPreview}
                       alt="Preview"
                       style={{
-                        maxHeight: '180px',
+                        maxHeight: '170px',
                         maxWidth: '100%',
                         borderRadius: '10px',
                         objectFit: 'contain',
                         margin: '0 auto',
-                        boxShadow: 'var(--shadow-md)',
+                        boxShadow: 'var(--shadow-sm)',
                       }}
                     />
-                    <div style={{ marginTop: '10px', fontSize: '12px', color: '#059669', fontWeight: 600 }}>
-                      Nhấp để chọn ảnh khác
+                    <div style={{ marginTop: '8px', fontSize: '12px', color: '#059669', fontWeight: 600 }}>
+                      Nhấp để chọn hoặc chụp ảnh khác
                     </div>
                   </div>
                 ) : (
                   <div>
-                    <Upload size={36} color="#64748b" style={{ margin: '0 auto 8px' }} />
+                    <Camera size={34} color="#64748b" style={{ margin: '0 auto 6px' }} />
                     <div style={{ fontSize: '14px', fontWeight: 600, color: '#1e293b' }}>
-                      Nhấp vào đây hoặc kéo thả ảnh vào để chọn
+                      Chụp ảnh hoặc chọn ảnh từ máy
                     </div>
                     <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-                      Định dạng JPG, PNG, WEBP (Tối đa 8MB)
+                      JPG, PNG, WEBP &bull; Tải trực tiếp lên Cloudinary
                     </div>
                   </div>
                 )}
@@ -1275,17 +1526,18 @@ export default function HomePage() {
               <div
                 style={{
                   background: '#f8fafc',
-                  padding: '10px 14px',
+                  padding: '10px 12px',
                   borderRadius: '10px',
                   fontSize: '12px',
                   color: '#64748b',
-                  marginBottom: '20px',
+                  marginBottom: '18px',
+                  border: '1px solid var(--border-subtle)',
                 }}
               >
                 <div style={{ fontWeight: 600, color: '#334155', marginBottom: '2px' }}>
-                  Nơi lưu trữ ảnh:
+                  Lưu trữ đám mây Cloudinary:
                 </div>
-                Ảnh được tải lên Cloudinary an toàn thông qua server Next.js và tự động lưu liên kết vào cơ sở dữ liệu Turso.
+                Ảnh được tải lên máy chủ Cloudinary và liên kết URL tự động lưu vào cơ sở dữ liệu Turso.
               </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
@@ -1293,6 +1545,9 @@ export default function HomePage() {
                   type="button"
                   disabled={uploading}
                   onClick={() => {
+                    if (uploadPreview && uploadPreview.startsWith('blob:')) {
+                      URL.revokeObjectURL(uploadPreview);
+                    }
                     setUploadProduct(null);
                     setUploadFile(null);
                     setUploadPreview(null);
@@ -1306,7 +1561,7 @@ export default function HomePage() {
                   disabled={uploading || !uploadFile}
                   className="btn btn-primary"
                 >
-                  {uploading ? 'Đang tải lên...' : 'Xác nhận tải ảnh'}
+                  {uploading ? 'Đang tải lên Cloud...' : 'Xác nhận tải ảnh'}
                 </button>
               </div>
             </form>
@@ -1319,6 +1574,9 @@ export default function HomePage() {
         <div
           className="modal-overlay"
           onClick={() => {
+            if (productImagePreview && productImagePreview.startsWith('blob:')) {
+              URL.revokeObjectURL(productImagePreview);
+            }
             setIsAddOpen(false);
             setEditProduct(null);
           }}
@@ -1330,6 +1588,9 @@ export default function HomePage() {
               </h3>
               <button
                 onClick={() => {
+                  if (productImagePreview && productImagePreview.startsWith('blob:')) {
+                    URL.revokeObjectURL(productImagePreview);
+                  }
                   setIsAddOpen(false);
                   setEditProduct(null);
                 }}
@@ -1340,31 +1601,33 @@ export default function HomePage() {
             </div>
 
             <form onSubmit={handleSaveProduct}>
-              <div className="form-group">
-                <label className="form-label">Mã PLU (Mã cân)</label>
-                <input
-                  type="text"
-                  required
-                  value={productForm.plu}
-                  onChange={(e) => setProductForm({ ...productForm, plu: e.target.value })}
-                  placeholder="Ví dụ: 46040"
-                  className="form-input"
-                />
+              <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '10px' }}>
+                <div className="form-group">
+                  <label className="form-label">Mã PLU</label>
+                  <input
+                    type="text"
+                    required
+                    value={productForm.plu}
+                    onChange={(e) => setProductForm({ ...productForm, plu: e.target.value })}
+                    placeholder="46040"
+                    className="form-input"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Tên sản phẩm</label>
+                  <input
+                    type="text"
+                    required
+                    value={productForm.name}
+                    onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
+                    placeholder="Ví dụ: Bơ sáp (tròn)"
+                    className="form-input"
+                  />
+                </div>
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Tên sản phẩm</label>
-                <input
-                  type="text"
-                  required
-                  value={productForm.name}
-                  onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
-                  placeholder="Ví dụ: Bơ sáp (tròn)"
-                  className="form-input"
-                />
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px', gap: '10px' }}>
                 <div className="form-group">
                   <label className="form-label">Danh mục</label>
                   <select
@@ -1382,7 +1645,7 @@ export default function HomePage() {
                 </div>
 
                 <div className="form-group">
-                  <label className="form-label">Đơn vị tính</label>
+                  <label className="form-label">Đơn vị</label>
                   <select
                     value={productForm.unit}
                     onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
@@ -1416,7 +1679,7 @@ export default function HomePage() {
               <div className="form-group">
                 <label className="form-label">Hình ảnh sản phẩm</label>
 
-                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                   <button
                     type="button"
                     onClick={() => setProductImageMode('upload')}
@@ -1429,8 +1692,8 @@ export default function HomePage() {
                       color: productImageMode === 'upload' ? '#0f172a' : '#64748b',
                     }}
                   >
-                    <Upload size={14} />
-                    <span>Tải ảnh từ máy</span>
+                    <Camera size={13} />
+                    <span>Tải ảnh / Chụp ảnh</span>
                   </button>
                   <button
                     type="button"
@@ -1444,43 +1707,42 @@ export default function HomePage() {
                       color: productImageMode === 'url' ? '#0f172a' : '#64748b',
                     }}
                   >
-                    <ExternalLink size={14} />
+                    <ExternalLink size={13} />
                     <span>Dán URL ảnh</span>
                   </button>
                 </div>
 
                 {productImageMode === 'upload' ? (
                   <div>
-                    <label className="dropzone" style={{ display: 'block', padding: '16px', cursor: 'pointer' }}>
+                    <label className="dropzone" style={{ display: 'block', padding: '14px', cursor: 'pointer' }}>
                       <input
                         type="file"
                         accept="image/png, image/jpeg, image/webp"
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (file) {
+                            if (productImagePreview && productImagePreview.startsWith('blob:')) {
+                              URL.revokeObjectURL(productImagePreview);
+                            }
                             setProductImageFile(file);
-                            const reader = new FileReader();
-                            reader.onloadend = () => {
-                              setProductImagePreview(reader.result as string);
-                            };
-                            reader.readAsDataURL(file);
+                            setProductImagePreview(URL.createObjectURL(file));
                           }
                         }}
                         style={{ display: 'none' }}
                       />
                       {productImagePreview ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', textAlign: 'left' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', textAlign: 'left' }}>
                           <img
                             src={productImagePreview}
                             alt="Preview"
-                            style={{ width: '64px', height: '64px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #cbd5e1' }}
+                            style={{ width: '56px', height: '56px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #cbd5e1' }}
                           />
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: '13px', fontWeight: 600, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {productImageFile?.name || 'Ảnh đã chọn'}
+                              {productImageFile?.name || 'Ảnh sản phẩm'}
                             </div>
-                            <div style={{ fontSize: '12px', color: '#059669', fontWeight: 500 }}>
-                              ✓ Đã chọn ảnh &bull; Chỉ tải lên Cloud khi bấm &ldquo;{editProduct ? 'Lưu thay đổi' : 'Thêm sản phẩm'}&rdquo;
+                            <div style={{ fontSize: '11px', color: '#059669', fontWeight: 600 }}>
+                              ✓ Sẽ tải lên Cloudinary khi bấm Lưu
                             </div>
                             <div style={{ fontSize: '11px', color: '#94a3b8' }}>
                               Nhấp để đổi ảnh khác
@@ -1491,8 +1753,12 @@ export default function HomePage() {
                             onClick={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
+                              if (productImagePreview && productImagePreview.startsWith('blob:')) {
+                                URL.revokeObjectURL(productImagePreview);
+                              }
                               setProductImageFile(null);
                               setProductImagePreview(null);
+                              setProductForm({ ...productForm, image_url: '' });
                             }}
                             style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '4px' }}
                             title="Bỏ chọn ảnh"
@@ -1502,12 +1768,12 @@ export default function HomePage() {
                         </div>
                       ) : (
                         <div>
-                          <Camera size={26} color="#64748b" style={{ margin: '0 auto 6px' }} />
+                          <Camera size={24} color="#64748b" style={{ margin: '0 auto 4px' }} />
                           <div style={{ fontSize: '13px', fontWeight: 600, color: '#1e293b' }}>
-                            Chọn ảnh hoặc chụp ảnh từ máy
+                            Chọn ảnh hoặc chụp ảnh từ điện thoại
                           </div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
-                            (Chỉ tải lên Cloud khi bấm {editProduct ? 'Lưu thay đổi' : 'Thêm sản phẩm'})
+                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>
+                            Tự động tải lên Cloudinary khi lưu
                           </div>
                         </div>
                       )}
@@ -1520,36 +1786,39 @@ export default function HomePage() {
                       value={productForm.image_url}
                       onChange={(e) => {
                         const val = e.target.value;
-                        setProductForm({ ...productForm, image_url: val });
-                        if (val.trim()) {
-                          setProductImagePreview(val.trim());
-                        } else {
-                          setProductImagePreview(null);
+                        if (val.trim().startsWith('data:')) {
+                          addToast('Không được dán ảnh dạng Base64. Vui lòng tải file ảnh lên để lưu Cloudinary.', 'error');
+                          return;
                         }
+                        setProductForm({ ...productForm, image_url: val });
+                        setProductImagePreview(val.trim() || null);
                       }}
-                      placeholder="https://..."
+                      placeholder="https://res.cloudinary.com/..."
                       className="form-input"
                     />
                     {productForm.image_url.trim() && (
-                      <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <img
                           src={productForm.image_url.trim()}
                           alt="Preview"
                           onError={() => {}}
-                          style={{ width: '48px', height: '48px', borderRadius: '8px', objectFit: 'cover', border: '1px solid #e2e8f0' }}
+                          style={{ width: '42px', height: '42px', borderRadius: '6px', objectFit: 'cover', border: '1px solid #e2e8f0' }}
                         />
-                        <span style={{ fontSize: '12px', color: '#64748b' }}>Xem trước ảnh từ đường dẫn URL</span>
+                        <span style={{ fontSize: '12px', color: '#64748b' }}>Xem trước ảnh liên kết URL</span>
                       </div>
                     )}
                   </div>
                 )}
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '24px' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
                 <button
                   type="button"
                   disabled={savingProduct}
                   onClick={() => {
+                    if (productImagePreview && productImagePreview.startsWith('blob:')) {
+                      URL.revokeObjectURL(productImagePreview);
+                    }
                     setIsAddOpen(false);
                     setEditProduct(null);
                     setProductImageFile(null);
@@ -1583,14 +1852,53 @@ export default function HomePage() {
               </button>
             </div>
             <form onSubmit={handleSaveSettings}>
-              <p style={{ fontSize: '13px', color: '#64748b', marginBottom: '16px' }}>
-                Thông tin kết nối tài khoản đám mây Cloudinary để lưu trữ ảnh tải lên từ nhân viên thu ngân / quản trị viên.
-              </p>
+              {/* Connection Status Badge */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '8px 12px',
+                  background: cloudinaryConfigured ? '#ecfdf5' : '#fffbeb',
+                  border: `1px solid ${cloudinaryConfigured ? '#a7f3d0' : '#fde68a'}`,
+                  borderRadius: '10px',
+                  marginBottom: '14px',
+                  fontSize: '12px',
+                  color: cloudinaryConfigured ? '#047857' : '#b45309',
+                  fontWeight: 600,
+                }}
+              >
+                {cloudinaryConfigured ? <Check size={16} color="#059669" /> : <AlertCircle size={16} color="#d97706" />}
+                <span>
+                  {cloudinaryConfigured
+                    ? `Đang kết nối: Cloud "${configuredCloudName || settingsForm.cloudinary_cloud_name}"`
+                    : 'Chưa cấu hình Cloudinary (Cần Cloud Name & API Key)'}
+                </span>
+              </div>
+
+              {/* Cloudinary URL quick helper */}
+              <div className="form-group">
+                <label className="form-label">
+                  Dán nhanh CLOUDINARY_URL (Tùy chọn)
+                </label>
+                <input
+                  type="text"
+                  value={settingsForm.cloudinary_url}
+                  onChange={(e) => handlePasteCloudinaryUrl(e.target.value)}
+                  placeholder="cloudinary://<api_key>:<api_secret>@<cloud_name>"
+                  className="form-input"
+                  style={{ fontSize: '13px' }}
+                />
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                  Nếu dán CLOUDINARY_URL, hệ thống sẽ tự động trích xuất các ô bên dưới.
+                </div>
+              </div>
 
               <div className="form-group">
                 <label className="form-label">Cloud Name (Tên Cloud)</label>
                 <input
                   type="text"
+                  required
                   value={settingsForm.cloudinary_cloud_name}
                   onChange={(e) =>
                     setSettingsForm({ ...settingsForm, cloudinary_cloud_name: e.target.value })
@@ -1604,6 +1912,7 @@ export default function HomePage() {
                 <label className="form-label">API Key</label>
                 <input
                   type="text"
+                  required
                   value={settingsForm.cloudinary_api_key}
                   onChange={(e) =>
                     setSettingsForm({ ...settingsForm, cloudinary_api_key: e.target.value })
@@ -1614,32 +1923,65 @@ export default function HomePage() {
               </div>
 
               <div className="form-group">
-                <label className="form-label">Cloudinary Token / API Secret</label>
+                <label className="form-label">API Secret / Token</label>
                 <input
                   type="text"
+                  required
                   value={settingsForm.cloudinary_token}
                   onChange={(e) =>
                     setSettingsForm({ ...settingsForm, cloudinary_token: e.target.value })
                   }
+                  placeholder="WvyrN70XVe0uR1VFDJOdkzDX6iU"
                   className="form-input"
                 />
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '24px' }}>
+              {/* Test feedback */}
+              {testResult && (
+                <div
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    marginBottom: '14px',
+                    background: testResult.success ? '#ecfdf5' : '#fef2f2',
+                    border: `1px solid ${testResult.success ? '#a7f3d0' : '#fecaca'}`,
+                    color: testResult.success ? '#047857' : '#b91c1c',
+                    fontWeight: 500,
+                  }}
+                >
+                  {testResult.message}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '20px' }}>
                 <button
                   type="button"
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="btn btn-secondary"
+                  disabled={testingConnection}
+                  onClick={handleTestConnection}
+                  className="btn btn-secondary btn-sm"
+                  title="Kiểm tra kết nối đến tài khoản Cloudinary"
                 >
-                  Đóng
+                  <RefreshCw size={14} className={testingConnection ? 'animate-spin' : ''} />
+                  <span>{testingConnection ? 'Đang test...' : 'Kiểm tra kết nối'}</span>
                 </button>
-                <button
-                  type="submit"
-                  disabled={settingsLoading}
-                  className="btn btn-emerald"
-                >
-                  {settingsLoading ? 'Đang lưu...' : 'Lưu cấu hình'}
-                </button>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingsOpen(false)}
+                    className="btn btn-secondary"
+                  >
+                    Đóng
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={settingsLoading}
+                    className="btn btn-emerald"
+                  >
+                    {settingsLoading ? 'Đang lưu...' : 'Lưu cấu hình'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>
@@ -1652,7 +1994,7 @@ export default function HomePage() {
           <div
             style={{
               position: 'relative',
-              maxWidth: '90vw',
+              maxWidth: '92vw',
               maxHeight: '90vh',
               background: 'white',
               borderRadius: '16px',
@@ -1665,8 +2007,8 @@ export default function HomePage() {
             <div
               style={{
                 position: 'absolute',
-                top: '12px',
-                right: '12px',
+                top: '10px',
+                right: '10px',
                 zIndex: 10,
               }}
             >
@@ -1693,8 +2035,8 @@ export default function HomePage() {
               src={lightboxImage.url}
               alt={lightboxImage.title}
               style={{
-                maxWidth: '85vw',
-                maxHeight: '75vh',
+                maxWidth: '88vw',
+                maxHeight: '70vh',
                 objectFit: 'contain',
                 display: 'block',
               }}
@@ -1702,27 +2044,28 @@ export default function HomePage() {
 
             <div
               style={{
-                padding: '14px 20px',
+                padding: '12px 16px',
                 background: 'white',
                 borderTop: '1px solid var(--border-subtle)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
+                gap: '12px',
               }}
             >
-              <div>
-                <h4 style={{ fontSize: '16px', fontWeight: 700, color: '#0f172a' }}>
+              <div style={{ minWidth: 0 }}>
+                <h4 style={{ fontSize: '15px', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {lightboxImage.title}
                 </h4>
-                <div style={{ fontSize: '13px', color: '#64748b' }}>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>
                   Mã PLU: <strong style={{ color: '#e11d48' }}>{lightboxImage.plu}</strong>
                 </div>
               </div>
               <button
-                onClick={() => handleCopyPlu(lightboxImage.plu)}
+                onClick={() => handleCopyPlu(lightboxImage.plu, lightboxImage.title)}
                 className="btn btn-secondary btn-sm"
               >
-                <Copy size={14} />
+                <Copy size={13} />
                 <span>Sao chép mã</span>
               </button>
             </div>
@@ -1730,7 +2073,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Toast Notification Container */}
+      {/* Floating Toast Notification Container */}
       <div className="toast-container">
         {toasts.map((t) => (
           <div

@@ -67,6 +67,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (image_url && String(image_url).trim().startsWith('data:')) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Không được phép lưu ảnh Base64 vào cơ sở dữ liệu. Vui lòng tải ảnh lên Cloudinary.',
+        },
+        { status: 400 }
+      );
+    }
+
     const client = getTursoClient();
 
     const insertResult = await client.execute({

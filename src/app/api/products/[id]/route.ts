@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getTursoClient } from '@/lib/turso';
 import { getSession } from '@/lib/auth';
+import { deleteCloudinaryImage } from '@/lib/cloudinary';
 
 export async function PUT(
   req: NextRequest,
@@ -18,6 +19,16 @@ export async function PUT(
     const { id } = await params;
     const body = await req.json();
     const { plu, name, category, unit, note, image_url } = body;
+
+    if (image_url && String(image_url).trim().startsWith('data:')) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: 'Không được phép lưu ảnh Base64 vào cơ sở dữ liệu. Vui lòng tải ảnh lên Cloudinary.',
+        },
+        { status: 400 }
+      );
+    }
 
     const client = getTursoClient();
 
@@ -70,6 +81,20 @@ export async function DELETE(
 
     const { id } = await params;
     const client = getTursoClient();
+
+    // Check if product has Cloudinary image
+    try {
+      const row = await client.execute({
+        sql: 'SELECT image_public_id FROM products WHERE id = ?',
+        args: [Number(id)],
+      });
+      const publicId = row.rows[0]?.image_public_id ? String(row.rows[0].image_public_id) : '';
+      if (publicId) {
+        deleteCloudinaryImage(publicId).catch(() => {});
+      }
+    } catch {
+      // Ignore
+    }
 
     await client.execute({
       sql: 'DELETE FROM products WHERE id = ?',
